@@ -13,7 +13,7 @@
   h1 b { color:var(--accent); }
   #status { color:var(--dim); font-family:ui-monospace, monospace; }
   canvas { display:block; width:100%; background:#0b0c0e; touch-action:none; }
-  #lane { height:200px; }
+  #lane { height:230px; }
   #overview { height:44px; border-top:1px solid var(--line); cursor:crosshair; }
   .controls { display:flex; flex-wrap:wrap; gap:10px; padding:12px 16px; }
   fieldset { border:1px solid var(--line); background:var(--panel); border-radius:8px; padding:8px 10px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:0; }
@@ -48,6 +48,7 @@
     <span id="presets"><button>0.25</button><button>0.5</button><button>0.75</button><button>1</button></span>
     <label><input type="checkbox" id="loop" checked> 반복</label>
     <label><input type="checkbox" id="guide" checked> 가이드 소리</label>
+    <label><input type="checkbox" id="hitsound"> 입력 소리</label>
     <label title="첫 클릭 순간을 첫 노트로 맞춤 (GD와 같이 칠 때)"><input type="checkbox" id="sync" checked> 첫 클릭 동기화</label>
     <button id="btnPlay" class="primary">연습 <kbd>P</kbd></button>
     <button id="btnReplay">리플레이 <kbd>V</kbd></button>
@@ -85,7 +86,7 @@ let cursor = 0;      // idle view position / practice start without a range
 let mode = 'idle';   // idle | record | rerecord | practice | replay
 let run = null;
 let inputs = [], res = {}, held = null, lastOff = null;
-let lastAttempt = null, history = [];
+let lastAttempt = null, history = [], recent = [];
 
 function load() {
   try {
@@ -154,7 +155,7 @@ function reset(now) {
   run.startPt = run.from;
   run.gi = 0;
   run.wait = mode === 'practice' && $('sync').checked && run.first != null;
-  if (mode === 'practice') { inputs = []; res = {}; lastOff = null; }
+  if (mode === 'practice') { inputs = []; res = {}; lastOff = null; recent = []; }
 }
 function stop() {
   if (!run) return;
@@ -199,9 +200,10 @@ function press(time) {
     run.startReal = time - (run.first - run.startPt) / run.speed;
   }
   const t = pt(time);
+  if ($('hitsound').checked) beep(880);
   if (mode === 'record' || mode === 'rerecord') {
     if (t < run.from || t >= run.to) return;
-    held = { t, d: 0 }; notes.push(held); beep(880);
+    held = { t, d: 0 }; notes.push(held);
   } else {
     held = { t, d: 0 }; inputs.push(held);
     const W = win() * run.speed;
@@ -215,6 +217,7 @@ function press(time) {
     if (best >= 0 && bd <= W) {
       held.note = best;
       lastOff = (t - notes[best].t) / run.speed;
+      recent.push(lastOff);
       res[best] = { press: lastOff };
     }
   }
@@ -332,7 +335,7 @@ function tick(now) {
   while (run.gi < g.length && g[run.gi].t < ahead) {
     const n = g[run.gi++];
     if (n.t < p - 5 || n.t < run.from - LEAD * run.speed) continue;
-    if (mode !== 'practice' || $('guide').checked)
+    if ($(mode === 'replay' ? 'hitsound' : 'guide').checked)
       beep(mode === 'replay' ? 660 : 1320, (run.startReal + (n.t - run.startPt) / run.speed - now) / 1000);
   }
   if (mode === 'practice') {
@@ -347,7 +350,11 @@ function tick(now) {
   }
 }
 
-const colOff = o => Math.abs(o) <= 20 ? '#4cd59a' : Math.abs(o) <= 50 ? '#f2c94c' : '#f2994a';
+// error colour: 0ms green → 30ms yellow → 60ms+ red, so the size of a miss reads at a glance
+const ERR_RED = 60;
+const colOff = o => `hsl(${130 * (1 - Math.min(1, Math.abs(o) / ERR_RED))}, 80%, 58%)`;
+// hold-length colour: short tap red → long hold yellow (log scale, 30ms..600ms)
+const colLen = d => `hsl(${55 * Math.min(1, Math.max(0, Math.log(d / 30) / Math.log(20)))}, 90%, 55%)`;
 const fmt = o => (o >= 0 ? '+' : '') + o.toFixed(1);
 
 function fit(c) {
@@ -381,11 +388,18 @@ function draw(now) {
     const d = live(n);
     if (n.t + d < t0 || n.t > t1) return;
     const r = mode === 'auto' ? (p >= n.t ? {} : null) : R[i], x0 = X(n.t), x1 = X(n.t + d), cy = ly + lh / 2;
-    const col = r ? (r.miss ? '#eb5757' : '#4cd59a') : '#e0883a';
-    lc.fillStyle = col + '99'; lc.fillRect(x0, cy - 9, Math.max(0, x1 - x0), 18);
-    if (d >= HOLD) { lc.fillStyle = '#f2c94c'; lc.fillRect(x1 - 2, ly + 4, 4, lh - 8); }
-    lc.beginPath(); lc.arc(x0, cy, 13, 0, Math.PI * 2); lc.fillStyle = col; lc.fill();
-    lc.fillStyle = '#111'; lc.fillText(i + 1, x0, cy + 4);
+    const col = r?.miss ? '#555' : colLen(Math.max(d, 1));
+    // body: bar from press to release, end cap marks the release
+    lc.globalAlpha = r?.miss ? 0.5 : 0.55; lc.fillStyle = col;
+    lc.fillRect(x0, cy - 10, Math.max(0, x1 - x0), 20);
+    lc.globalAlpha = 1;
+    if (d >= HOLD) lc.fillRect(x1 - 3, cy - 16, 6, 32);
+    lc.beginPath(); lc.arc(x0, cy, 13, 0, Math.PI * 2); lc.fill();
+    if (r && !r.miss) { // judged ring sits outside the note so it never blends with a red note
+      lc.beginPath(); lc.arc(x0, cy, 18, 0, Math.PI * 2);
+      lc.strokeStyle = r.press != null ? colOff(r.press) : '#fff'; lc.lineWidth = 3; lc.stroke();
+    }
+    if (x1 - x0 > 60) { lc.fillStyle = '#111'; lc.fillText(Math.round(d) + 'ms', (x0 + 13 + x1) / 2, cy + 4); }
     if (r?.press != null) {
       lc.fillStyle = colOff(r.press); lc.fillText(fmt(r.press), x0, ly - 8);
       if (r.release != null) { lc.fillStyle = colOff(r.release); lc.fillText('↑' + fmt(r.release), x1, ly - 8); }
@@ -405,7 +419,23 @@ function draw(now) {
   // hit line + readouts
   lc.fillStyle = '#fff'; lc.fillRect(hx - 1, ly - 30, 2, lh + 50);
   lc.textAlign = 'left'; lc.font = '600 13px ui-monospace, monospace';
-  if (lastOff != null && mode === 'practice') { lc.fillStyle = colOff(lastOff); lc.fillText(fmt(lastOff) + ' ms', hx + 8, ly - 32); }
+  if (lastOff != null && mode === 'practice') {
+    lc.fillStyle = colOff(lastOff); lc.font = '700 18px ui-monospace, monospace';
+    lc.fillText(fmt(lastOff) + ' ms ' + (Math.abs(lastOff) < 3 ? '' : lastOff < 0 ? '빠름' : '늦음'), hx + 8, ly - 30);
+  }
+  // hit-error meter: left = early, right = late, colour = how far off; latest hit brightest
+  if (mode === 'practice' || recent.length) {
+    const my = 200, half = 130, scale = half / win();
+    for (let x = -half; x < half; x += 2) { lc.fillStyle = colOff(x / scale); lc.globalAlpha = 0.25; lc.fillRect(hx + x, my, 2, 6); }
+    recent.slice(-20).forEach((o, k, a) => {
+      lc.globalAlpha = 0.3 + 0.7 * (k + 1) / a.length;
+      lc.fillStyle = colOff(o); lc.fillRect(hx + Math.max(-half, Math.min(half, o * scale)) - 1.5, my - 8, 3, 22);
+    });
+    lc.globalAlpha = 1; lc.fillStyle = '#fff'; lc.fillRect(hx - 1, my - 10, 2, 26);
+    lc.font = '11px system-ui'; lc.fillStyle = '#8a8f98';
+    lc.textAlign = 'right'; lc.fillText('빠름', hx - half - 6, my + 7);
+    lc.textAlign = 'left'; lc.fillText('늦음', hx + half + 6, my + 7);
+  }
   if (run?.wait) {
     lc.fillStyle = '#f2c94c'; lc.font = '700 16px system-ui';
     lc.fillText('첫 클릭 대기 — 첫 노트 타이밍에 누르세요', hx + 12, ly + lh + 60);
@@ -418,8 +448,7 @@ function draw(now) {
   const [ow, oh] = fit(ov), L = viewLen(), OX = t => t / L * ow;
   oc.clearRect(0, 0, ow, oh);
   if (sel) { oc.fillStyle = 'rgba(242,201,76,0.18)'; oc.fillRect(OX(sel.a), 0, OX(sel.b) - OX(sel.a), oh); }
-  oc.fillStyle = '#e0883a';
-  for (const n of notes) oc.fillRect(OX(n.t), oh * 0.3, Math.max(1, OX(n.d)), oh * 0.4);
+  for (const n of notes) { oc.fillStyle = colLen(Math.max(n.d, 1)); oc.fillRect(OX(n.t), oh * 0.3, Math.max(1, OX(n.d)), oh * 0.4); }
   oc.fillStyle = '#fff'; oc.fillRect(OX(p) - 1, 0, 2, oh);
   oc.fillStyle = '#555'; oc.fillRect(OX(patLen()), 0, 1, oh);
 
