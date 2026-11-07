@@ -38,7 +38,7 @@
 
 <div class="controls">
   <fieldset><legend>녹화</legend>
-    속도 <input id="recSpeed" type="number" value="0.5" step="0.05" min="0.05" max="4">x
+    속도 <input id="recSpeed" type="number" value="1" step="0.05" min="0.05" max="4">x
     <button id="btnRec" class="primary">전체 녹화 <kbd>R</kbd></button>
     <button id="btnReRec">구간 재녹화 <kbd>T</kbd></button>
     <button id="btnUndo">되돌리기</button>
@@ -216,6 +216,7 @@ function press(time) {
     run.startReal = time - (run.first - run.startPt) / run.speed;
   }
   const t = pt(time);
+  if (mode === 'gd') { held = { t, d: 0, user: true }; inputs.push(held); return; }
   if ($('hitsound').checked) beep(880);
   if (mode === 'record' || mode === 'rerecord') {
     if (t < run.from || t >= run.to) return;
@@ -272,8 +273,9 @@ try {
   es.onerror = () => { helperOn = false; if (hOff === Infinity) es.close(); }; // no helper here: stop retrying
   es.onmessage = e => {
     const [k, v] = e.data.split(',');
-    if (k === 'm') { gdMacro = v; return; } // GD macro state, shown in the status bar
-    if (k !== 'k') {
+    if (k === 'm') return gdState(v, e.data.split(',').slice(2).join(','));
+    if (k === 's') return gdSent(e.data.split(','));
+    if ('dupr'.includes(k)) {
       // ponytail: min-latency offset between helper clock and performance.now, fine unless clocks drift over hours
       hOff = Math.min(hOff, performance.now() - +v);
     }
@@ -288,6 +290,39 @@ try {
 // macro into GD: the helper presses Space for you. You press the first note yourself
 // (that aligns the pattern with the level), the helper plays every note after it at 1x.
 let gdMacro = null;
+let gdSend = null, gdFg = '', gdWorst = 0;
+// helper reports: playing,<t0> (time zero) · fg,<window title> · done / stopped
+function gdState(v, arg) {
+  if (v === 'fg') { gdFg = arg; return; }
+  gdMacro = v;
+  if (v === 'playing' && gdSend) {
+    stop();
+    mode = 'gd'; gdWorst = 0;
+    inputs = []; res = {}; lastOff = null; recent = [];
+    const { origin, list } = gdSend, last = list[list.length - 1];
+    run = { speed: 1, from: origin, to: last.t + 1, end: Infinity, guide: [], gi: 0, base: [],
+            startPt: origin, startReal: +arg + hOff };
+  }
+  if ((v === 'done' || v === 'stopped') && mode === 'gd') {
+    lastAttempt = { inputs, res, from: run.from, to: run.to, speed: 1 }; // V replays what the bot did
+    const p = pt(performance.now());
+    setTimeout(() => { if (mode === 'gd') { stop(); cursor = p; } }, 800);
+  }
+}
+// helper sent a key: s,<vk>,<down 1|0>,<helper time>,<lateness ms>
+let botHeld = null;
+function gdSent([, vk, down, t, late]) {
+  if (mode !== 'gd' || vk !== '32') return; // R is time zero, already known
+  gdWorst = Math.max(gdWorst, +late);
+  const pt_ = pt(+t + hOff);
+  if (down === '1') {
+    botHeld = { t: pt_, d: 0, bot: true }; inputs.push(botHeld);
+    let best = -1, bd = Infinity;
+    notes.forEach((n, i) => { const dd = Math.abs(pt_ - n.t); if (!res[i] && dd < bd) { bd = dd; best = i; } });
+    if (best >= 0 && bd <= win()) { botHeld.note = best; res[best] = { press: lastOff = pt_ - notes[best].t }; recent.push(lastOff); }
+  } else if (botHeld) { botHeld.d = pt_ - botHeld.t; botHeld = null; }
+}
+
 async function sendToGd() {
   if (!helperOn) return alert('gdpt-helper.exe를 실행하고 http://localhost:8123 으로 열어야 합니다');
   // R-sync: helper presses R itself and plays from the level start (up to the end of the range)
@@ -296,6 +331,7 @@ async function sendToGd() {
   if (!list.length) return alert('보낼 노트가 없습니다');
   stop();
   const t0 = r ? 0 : list[0].t;
+  gdSend = { origin: t0, list };
   const body = list.map(n => `${(n.t - t0).toFixed(3)},${n.d.toFixed(3)}`).join('\n');
   try { await fetch(r ? '/macro?r=1' : '/macro', { method: 'POST', body }); } catch { alert('helper 연결 실패'); }
 }
@@ -374,7 +410,7 @@ function tick(now) {
     if ($(mode === 'replay' ? 'hitsound' : 'guide').checked)
       beep(mode === 'replay' ? 660 : 1320, (run.startReal + (n.t - run.startPt) / run.speed - now) / 1000);
   }
-  if (mode === 'practice') {
+  if (mode === 'practice' || mode === 'gd') {
     const W = win() * run.speed;
     for (const i of targets()) if (!res[i] && p > notes[i].t + W) res[i] = { miss: true };
   }
@@ -404,7 +440,7 @@ function draw(now) {
   const p = run ? pt(now) : cursor;
   const z = +$('zoom').value;
   const R = mode === 'replay' ? lastAttempt.res : res;
-  const I = mode === 'replay' ? lastAttempt.inputs : mode === 'practice' ? inputs : mode === 'auto' ? notes.filter(n => n.t <= p) : [];
+  const I = mode === 'replay' ? lastAttempt.inputs : mode === 'practice' || mode === 'gd' ? inputs : mode === 'auto' ? notes.filter(n => n.t <= p) : [];
   const live = x => x === held ? Math.max(0, p - x.t) : x.d;
 
   // lane
@@ -445,7 +481,7 @@ function draw(now) {
   for (const x of I) {
     const a = X(x.t), b = X(x.t + live(x));
     if (b < 0 || a > w) continue;
-    lc.fillStyle = x.note != null ? '#d0d0d0' : '#777';
+    lc.fillStyle = x.user ? '#eb5757' : x.note != null ? '#d0d0d0' : '#777';
     lc.fillRect(a, ly + lh + 12, Math.max(3, b - a), 14);
   }
   // macro playback: jump button lights while the bot is holding
@@ -472,7 +508,12 @@ function draw(now) {
     lc.textAlign = 'right'; lc.fillText('빠름', hx - half - 6, my + 7);
     lc.textAlign = 'left'; lc.fillText('늦음', hx + half + 6, my + 7);
   }
-  if (run?.waitR) {
+  if (mode === 'gd') {
+    const ok = /geometry ?dash/i.test(gdFg);
+    lc.font = '700 15px system-ui'; lc.fillStyle = ok ? '#4cd59a' : '#eb5757';
+    lc.fillText(ok ? `키 → ${gdFg}` : `⚠ 키가 GD가 아닌 "${gdFg || '알 수 없음'}" 창으로 가는 중`, hx + 12, ly + lh + 64);
+    if (inputs.some(x => x.user)) { lc.fillStyle = '#eb5757'; lc.fillText('⚠ 재생 중에 직접 누른 입력 있음 (빨간 바) — 봇 입력과 겹침', hx + 12, ly + lh + 84); }
+  } else if (run?.waitR) {
     lc.fillStyle = '#f2c94c'; lc.font = '700 16px system-ui';
     lc.fillText('R 대기 — GD에서 R을 눌러 재시작하면 시작', hx + 12, ly + lh + 64);
   } else if (run?.wait) {
@@ -491,12 +532,12 @@ function draw(now) {
   oc.fillStyle = '#fff'; oc.fillRect(OX(p) - 1, 0, 2, oh);
   oc.fillStyle = '#555'; oc.fillRect(OX(patLen()), 0, 1, oh);
 
-  const names = { idle: '대기', record: '녹화 중', rerecord: '구간 재녹화', practice: '연습', replay: '리플레이', auto: '매크로 재생' };
+  const names = { idle: '대기', record: '녹화 중', rerecord: '구간 재녹화', practice: '연습', replay: '리플레이', auto: '매크로 재생', gd: 'GD 매크로 (실제 보낸 키)' };
   $('status').textContent = `${names[mode]}${run ? ' ' + run.speed + 'x' : ''} · ${(p / 1000).toFixed(2)}s · 노트 ${notes.length}개`
     + (sel ? ` · 구간 ${(sel.a / 1000).toFixed(2)}–${(sel.b / 1000).toFixed(2)}s` : '')
     + (mode === 'record' ? ' · Esc / F9로 종료' : '')
     + (helperOn ? ' · 전역 입력 ON' : '')
-    + ({ starting: ' · GD 매크로: R 누르고 시작', armed: ' · GD 매크로 대기: GD에서 첫 노트를 직접 누르세요', playing: ' · GD 매크로 재생 중 (F9 정지)', done: ' · GD 매크로 끝', stopped: ' · GD 매크로 정지' }[gdMacro] ?? '');
+    + ({ starting: ' · GD 매크로: R 누르고 시작', armed: ' · GD 매크로 대기: GD에서 첫 노트를 직접 누르세요', playing: ` · GD 매크로 재생 중 (F9 정지) · 최대 지연 ${gdWorst.toFixed(2)}ms`, done: ' · GD 매크로 끝', stopped: ' · GD 매크로 정지' }[gdMacro] ?? '');
 }
 
 function frame(now) {

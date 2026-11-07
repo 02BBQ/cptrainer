@@ -21,6 +21,8 @@ class Helper {
     [DllImport("user32.dll")] static extern uint SendInput(uint n, INPUT[] inputs, int size);
     [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string name);
     [DllImport("winmm.dll")] static extern uint timeBeginPeriod(uint ms);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int max);
     [StructLayout(LayoutKind.Sequential)] struct MSG { public IntPtr hwnd; public uint msg; public IntPtr w, l; public uint time; public int x, y; }
     [StructLayout(LayoutKind.Sequential)] struct MOUSEINPUT { public int dx, dy; public uint data, flags, time; public IntPtr extra; }
     [StructLayout(LayoutKind.Sequential)] struct KEYBDINPUT { public ushort vk, scan; public uint flags, time; public IntPtr extra; }
@@ -102,8 +104,16 @@ class Helper {
         while (true) {
             double left = target - NowMs();
             if (left <= 0) return;
-            if (left > 3) Thread.Sleep(1); else Thread.SpinWait(100); // sleep coarse, spin the last ms for accuracy
+            // sleep while far, busy-spin the last 20ms: with GD hogging the CPU, Sleep(1) can wake ~10ms late
+            if (left > 20) Thread.Sleep(1); else Thread.SpinWait(50);
         }
+    }
+
+    // which window our keys land in: if it isn't GD, GD never sees them
+    static string Foreground() {
+        StringBuilder b = new StringBuilder(256);
+        GetWindowText(GetForegroundWindow(), b, 256);
+        return b.ToString();
     }
 
     static Ev E(double t, ushort vk, ushort scan, bool down) { Ev e; e.t = t; e.vk = vk; e.scan = scan; e.down = down; return e; }
@@ -121,9 +131,11 @@ class Helper {
         SendInput(0, new INPUT[1], Marshal.SizeOf(typeof(INPUT))); // JIT the P/Invoke path before it matters
         WaitUntil(NowMs());
         double t0;
-        if (rMode) { Thread.Sleep(50); if (gen != macroGen) return; t0 = NowMs(); }
+        string fg = Foreground(); // read before t0: it costs ~1ms and would delay the first key
+        if (rMode) { Thread.Sleep(50); if (gen != macroGen) return; fg = Foreground(); t0 = NowMs(); }
         else { while (!go.WaitOne(100)) if (gen != macroGen) return; t0 = startT0; } // cancelled before it started
-        queue.Add("m,playing");
+        queue.Add("m,playing," + Fmt(t0));
+        queue.Add("m,fg," + fg);
         bool spaceHeld = false;
         double worst = 0;
         foreach (Ev e in ev) {
@@ -131,9 +143,11 @@ class Helper {
             if (gen != macroGen) { if (spaceHeld) SendKey(0x20, 0x39, false); queue.Add("m,stopped"); return; }
             double late = NowMs() - (t0 + e.t);
             SendKey(e.vk, e.scan, e.down);
+            queue.Add("s," + e.vk + "," + (e.down ? 1 : 0) + "," + Fmt(t0 + e.t + late) + "," + late.ToString("F2", CultureInfo.InvariantCulture));
             if (e.vk == 0x20) spaceHeld = e.down;
             worst = Math.Max(worst, late);
         }
+        queue.Add("m,fg," + Foreground());
         Console.WriteLine("macro done: " + t.Length + " notes" + (rMode ? " from R" : "") + ", worst lateness " + worst.ToString("F2") + " ms");
         queue.Add("m,done");
     }
@@ -210,6 +224,7 @@ class Helper {
         if (!File.Exists(page)) { Console.WriteLine("index.html not found next to the exe"); Console.ReadLine(); return; }
 
         timeBeginPeriod(1); // 1ms sleep granularity for macro timing
+        try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High; } catch { } // don't lose the CPU to GD mid-note
 
         HttpListener http = new HttpListener();
         http.Prefixes.Add("http://localhost:" + PORT + "/");
