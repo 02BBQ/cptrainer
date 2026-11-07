@@ -43,8 +43,9 @@
     <button id="btnReRec">구간 재녹화 <kbd>T</kbd></button>
     <button id="btnUndo">되돌리기</button>
   </fieldset>
-  <fieldset><legend>연습</legend>
+  <fieldset><legend>연습 · 재생</legend>
     속도 <input id="playSpeed" type="number" value="1" step="0.05" min="0.05" max="4">x
+    <span id="presets"><button>0.25</button><button>0.5</button><button>0.75</button><button>1</button></span>
     <label><input type="checkbox" id="loop" checked> 반복</label>
     <label><input type="checkbox" id="guide" checked> 가이드 소리</label>
     <label title="첫 클릭 순간을 첫 노트로 맞춤 (GD와 같이 칠 때)"><input type="checkbox" id="sync" checked> 첫 클릭 동기화</label>
@@ -136,7 +137,8 @@ function start(kind) {
     from = sel ? sel.a : cursor; to = sel ? sel.b : patLen();
     guide = kind === 'auto' || $('guide').checked ? notes : [];
   } else {
-    ({ speed, from, to } = lastAttempt);
+    ({ from, to } = lastAttempt);
+    speed = speedOf('playSpeed');
     guide = lastAttempt.inputs; // hear your own clicks
   }
   // run ends after the last hold that starts inside the range is released
@@ -291,6 +293,18 @@ on('btnPlay', () => start('practice'));
 on('btnReplay', () => start('replay'));
 on('btnAuto', () => start('auto'));
 on('btnStop', stop);
+// speed change applies live to a running practice / playback / replay
+function setSpeed() {
+  if (!run || !['practice', 'auto', 'replay'].includes(mode)) return;
+  const now = performance.now();
+  if (!run.wait && now > run.startReal) { run.startPt = pt(now); run.startReal = now; }
+  run.speed = speedOf('playSpeed');
+}
+$('playSpeed').addEventListener('input', setSpeed);
+$('presets').addEventListener('click', e => {
+  if (e.target.tagName !== 'BUTTON') return;
+  e.target.blur(); $('playSpeed').value = e.target.textContent; setSpeed();
+});
 on('btnUndo', () => { stop(); if (backup) { [notes, backup] = [backup, notes]; persist(); } });
 on('btnSave', () => {
   const a = document.createElement('a');
