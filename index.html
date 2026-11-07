@@ -153,14 +153,16 @@ function start(kind) {
   for (const n of notes) if (n.t >= from && n.t < to) end = Math.max(end, n.t + n.d);
   mode = kind;
   const first = notes.find(n => n.t >= from && n.t < to)?.t;
-  run = { speed, from, to, end: end + 300 * speed, guide, gi: 0, first, base: notes.slice() };
+  run = { speed, from, to, end: end + 300 * speed, guide, gi: 0, first, base: notes.slice(),
+    // R-sync only when driven from GD (helper connected, page not focused); started in the page = site-only run
+    rOrigin: rsync() && helperOn && !document.hasFocus() && R_MODES.includes(kind) };
   reset(performance.now());
 }
 function reset(now) {
   run.startReal = now + LEAD;
   run.startPt = run.from;
   run.gi = 0;
-  run.waitR = rsync() && R_MODES.includes(mode);
+  run.waitR = run.rOrigin;
   run.wait = !run.waitR && mode === 'practice' && $('sync').checked && run.first != null;
   if (mode === 'practice') { inputs = []; res = {}; lastOff = null; recent = []; }
 }
@@ -169,7 +171,7 @@ function reset(now) {
 const R_MODES = ['record', 'rerecord', 'practice'];
 const rsync = () => $('rsync').checked;
 function onRestart(time) {
-  if (!run || !rsync() || !R_MODES.includes(mode)) return;
+  if (!run || !run.rOrigin) return;
   if (mode === 'practice' && !run.waitR) finishAttempt();
   held = null; downKeys.clear();
   if (mode === 'practice') { inputs = []; res = {}; lastOff = null; recent = []; }
@@ -180,7 +182,7 @@ function onRestart(time) {
 function stop() {
   if (!run) return;
   if (held) release(performance.now());
-  if (mode === 'record' && notes.length && !rsync()) { // trim leading silence to 500ms
+  if (mode === 'record' && notes.length && !run.rOrigin) { // trim leading silence to 500ms
     const shift = notes[0].t - 500;
     notes.forEach(n => n.t -= shift);
   }
