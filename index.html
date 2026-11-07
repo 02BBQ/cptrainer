@@ -500,63 +500,109 @@ function runMessage(p) {
 
 const TIERS = [[8, 'PERFECT', '#7df9ff'], [20, 'GREAT', '#4cd59a'], [45, 'GOOD', '#f2c94c'], [Infinity, 'BAD', '#f2994a']];
 
-// rhythm-game view: one key lane, notes fall onto a judgement line, holds are long bars
+// rhythm-game view: one key lane, notes fall onto a judgement line, holds are long bars.
+// Readability: wide lane, time grid, solid note heads with outlines, gap labels beside the lane,
+// judgement / combo in the side panels so they never cover notes, key box under the line.
+function rrect(x, y, w, h, r) { lc.beginPath(); lc.roundRect(x, y, w, h, r); }
 function drawRhythm(now, p, z, R, live) {
   const [w, h] = fit(lane);
-  const lw = Math.min(200, w * 0.45), lx = (w - lw) / 2, jy = h - 120, zz = z * 1.6;
+  const lw = Math.min(280, w * 0.5), lx = (w - lw) / 2, jy = h - 130, zz = z * 1.6;
+  const side = lx, wide = side > 150; // room for side panels?
   const Y = t => jy - (t - p) * zz;
   lc.clearRect(0, 0, w, h);
-  lc.fillStyle = '#101114'; lc.fillRect(lx, 0, lw, h);
-  lc.fillStyle = '#2c2f35'; lc.fillRect(lx - 2, 0, 2, h); lc.fillRect(lx + lw, 0, 2, h);
+  lc.fillStyle = '#16181c'; lc.fillRect(lx, 0, lw, jy + 2);
+  lc.fillStyle = '#3a3e46'; lc.fillRect(lx - 2, 0, 2, jy); lc.fillRect(lx + lw, 0, 2, jy);
 
-  // key glow while the button is down (you, the in-app bot, or the GD bot)
-  const down = held || botHeld || (mode === 'auto' && notes.some(n => p >= n.t && p < n.t + Math.max(n.d, 40)));
-  if (down) {
-    const g = lc.createLinearGradient(0, jy - 160, 0, jy);
-    g.addColorStop(0, 'rgba(125,249,255,0)'); g.addColorStop(1, 'rgba(125,249,255,0.25)');
-    lc.fillStyle = g; lc.fillRect(lx, jy - 160, lw, 160);
+  // time grid: faint line every 100ms, stronger + label every 500ms (time until it reaches the line)
+  lc.font = '11px ui-monospace, monospace'; lc.textAlign = 'right';
+  for (let k = Math.ceil((p - 200) / 100) * 100; Y(k) > 0; k += 100) {
+    const y = Y(k); if (y > jy) continue;
+    const major = Math.round(k) % 500 === 0;
+    lc.fillStyle = major ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.035)';
+    lc.fillRect(lx, y, lw, 1);
+    if (major && y < jy - 14) { lc.fillStyle = '#5c616b'; lc.fillText(`${((k - p) / 1000).toFixed(1)}s`, lx - 8, y + 4); }
   }
 
-  const tTop = p + jy / zz, tBot = p - (h - jy) / zz;
+  const down = held || botHeld || (mode === 'auto' && notes.some(n => p >= n.t && p < n.t + Math.max(n.d, 40)));
+  if (down) {
+    const g = lc.createLinearGradient(0, jy - 200, 0, jy);
+    g.addColorStop(0, 'rgba(125,249,255,0)'); g.addColorStop(1, 'rgba(125,249,255,0.22)');
+    lc.fillStyle = g; lc.fillRect(lx, jy - 200, lw, 200);
+  }
+
+  const tTop = p + jy / zz, tBot = p - (h - jy) / zz, HEAD = 22;
+  lc.save(); lc.beginPath(); lc.rect(0, 0, w, jy + HEAD / 2); lc.clip(); // notes never draw over the key box
   notes.forEach((n, i) => {
     const d = live(n), r = mode === 'auto' ? (p >= n.t ? {} : null) : R[i];
     if (n.t > tTop || n.t + d < tBot) return;
     const hit = r && !r.miss, holding = hit && (held?.note === i || botHeld?.note === i || mode === 'auto') && p < n.t + d;
-    if (hit && p >= n.t && !holding) return; // cleared notes vanish like in a rhythm game
-    const col = r?.miss ? '#555' : colLen(Math.max(d, 1));
-    if (d >= HOLD) { // hold body, shrinks into the line while held
-      const yTop = Y(n.t + d), yBot = holding ? jy : Y(n.t);
-      lc.globalAlpha = r?.miss ? 0.35 : 0.6; lc.fillStyle = col;
-      lc.fillRect(lx + lw * 0.2, yTop, lw * 0.6, yBot - yTop);
-      lc.globalAlpha = 1; lc.fillRect(lx + lw * 0.2, yTop - 3, lw * 0.6, 6);
+    if (hit && p >= n.t && !holding) return; // cleared notes vanish
+    const col = r?.miss ? '#4a4d55' : colLen(Math.max(d, 1)), yh = holding ? jy : Y(n.t);
+    if (d >= HOLD) { // hold: translucent body with solid edges, white release cap
+      const yt = Y(n.t + d), bx = lx + lw * 0.25, bw = lw * 0.5;
+      lc.globalAlpha = r?.miss ? 0.3 : 0.45; lc.fillStyle = col; lc.fillRect(bx, yt, bw, yh - yt);
+      lc.globalAlpha = 1; lc.fillRect(bx, yt, 3, yh - yt); lc.fillRect(bx + bw - 3, yt, 3, yh - yt);
+      lc.fillStyle = r?.miss ? '#666' : '#f4f4f4'; rrect(lx + 14, yt - 4, lw - 28, 8, 4); lc.fill();
+      if (yh - yt > 34) { lc.fillStyle = '#e6e6e6'; lc.font = '700 13px ui-monospace, monospace'; lc.textAlign = 'center'; lc.fillText(Math.round(d) + 'ms', lx + lw / 2, (yt + yh) / 2 + 5); }
     }
-    if (!holding) { lc.fillStyle = col; lc.fillRect(lx + 6, Y(n.t) - 9, lw - 12, 18); lc.fillStyle = 'rgba(255,255,255,0.5)'; lc.fillRect(lx + 6, Y(n.t) - 9, lw - 12, 3); }
+    if (!holding) { // head: solid, outlined, highlight on top edge
+      rrect(lx + 6, yh - HEAD / 2, lw - 12, HEAD, 6);
+      lc.fillStyle = col; lc.fill();
+      lc.lineWidth = 2; lc.strokeStyle = 'rgba(0,0,0,0.55)'; lc.stroke();
+      lc.fillStyle = 'rgba(255,255,255,0.55)'; lc.fillRect(lx + 12, yh - HEAD / 2 + 3, lw - 24, 3);
+    }
+    // gap since the previous press, beside the lane: the rhythm you have to read
+    if (!holding && yh < jy - 4) {
+      const gap = i > 0 ? n.t - notes[i - 1].t : null;
+      lc.textAlign = 'left'; lc.font = '600 12px ui-monospace, monospace';
+      lc.fillStyle = r?.miss ? '#eb5757' : '#8a8f98';
+      lc.fillText(r?.miss ? 'MISS' : gap != null ? `+${Math.round(gap)}` : 'start', lx + lw + 10, yh + 4);
+    }
   });
+  lc.restore();
 
-  // judgement line
-  lc.fillStyle = down ? '#7df9ff' : '#fff'; lc.fillRect(lx - 10, jy - 2, lw + 20, 4);
+  // judgement line + key box
+  lc.save(); lc.shadowColor = down ? '#7df9ff' : 'rgba(255,255,255,0.6)'; lc.shadowBlur = down ? 18 : 8;
+  lc.fillStyle = down ? '#7df9ff' : '#fff'; lc.fillRect(lx - 12, jy - 3, lw + 24, 6); lc.restore();
+  rrect(lx + 6, jy + 16, lw - 12, 34, 8);
+  lc.fillStyle = down ? '#7df9ff' : '#1f2227'; lc.fill();
+  lc.strokeStyle = down ? '#7df9ff' : '#3a3e46'; lc.lineWidth = 2; lc.stroke();
+  lc.fillStyle = down ? '#111' : '#8a8f98'; lc.font = '700 13px system-ui'; lc.textAlign = 'center';
+  lc.fillText('SPACE · ↑ · W', lx + lw / 2, jy + 38);
 
-  // combo: hits since the last miss, in note order
+  // combo + latest judgement: in side panels when there is room, otherwise high above the line
   let combo = 0;
   if (run && (mode === 'practice' || mode === 'gd')) for (const i of targets()) { if (!res[i]) break; combo = res[i].miss ? 0 : combo + 1; }
+  const jx = wide ? lx / 2 : w / 2, jyText = wide ? jy - 60 : h * 0.22;
+  const cx = wide ? lx + lw + side / 2 : w / 2, cy = wide ? jy - 70 : h * 0.12;
   lc.textAlign = 'center';
-  if (combo > 1) { lc.fillStyle = '#e6e6e6'; lc.font = '800 44px system-ui'; lc.fillText(combo, w / 2, h * 0.28); lc.font = '600 13px system-ui'; lc.fillStyle = '#8a8f98'; lc.fillText('COMBO', w / 2, h * 0.28 + 20); }
-
-  // latest judgement: pops then fades over 500ms
+  if (combo > 1) {
+    lc.fillStyle = '#e6e6e6'; lc.font = '800 46px system-ui'; lc.fillText(combo, cx, cy);
+    lc.font = '700 12px system-ui'; lc.fillStyle = '#8a8f98'; lc.fillText('COMBO', cx, cy + 20);
+  }
   if (judge && (mode === 'practice' || mode === 'gd')) {
-    const age = (now - judge.at) / 500;
+    const age = (now - judge.at) / 600;
     if (age < 1) {
       const [, text, c] = judge.off == null ? [0, 'MISS', '#eb5757'] : TIERS.find(t => Math.abs(judge.off) <= t[0]);
-      lc.globalAlpha = 1 - age; lc.fillStyle = c;
-      lc.font = `900 ${Math.round(38 * (1 + 0.25 * Math.max(0, 0.2 - age) / 0.2))}px system-ui`;
-      lc.fillText(text, w / 2, jy - 70);
-      if (judge.off != null) { lc.font = '700 15px ui-monospace, monospace'; lc.fillText(`${fmt(judge.off)} ms ${Math.abs(judge.off) < 3 ? '' : judge.off < 0 ? '빠름' : '늦음'}`, w / 2, jy - 44); }
+      lc.globalAlpha = Math.min(1, 2 * (1 - age)); lc.fillStyle = c;
+      lc.font = `900 ${Math.round(34 * (1 + 0.25 * Math.max(0, 0.15 - age) / 0.15))}px system-ui`;
+      lc.fillText(text, jx, jyText);
+      if (judge.off != null) {
+        lc.font = '700 16px ui-monospace, monospace';
+        lc.fillText(`${fmt(judge.off)} ms`, jx, jyText + 26);
+        if (Math.abs(judge.off) >= 3) { lc.font = '700 13px system-ui'; lc.fillText(judge.off < 0 ? '빠름' : '늦음', jx, jyText + 46); }
+      }
       lc.globalAlpha = 1;
     }
   }
-  if (mode === 'practice' || recent.length) drawMeter(w / 2, jy + 60);
+  if (mode === 'practice' || recent.length) drawMeter(w / 2, jy + 92);
   const msg = runMessage(p);
-  if (msg) { lc.textAlign = 'center'; lc.fillStyle = msg[1]; lc.font = `700 ${msg[2]}px system-ui`; lc.fillText(msg[0], w / 2, h * 0.45); }
+  if (msg) {
+    lc.textAlign = 'center'; lc.font = `700 ${msg[2]}px system-ui`;
+    const tw = lc.measureText(msg[0]).width;
+    lc.fillStyle = 'rgba(11,12,14,0.85)'; rrect(w / 2 - tw / 2 - 14, h * 0.42 - msg[2], tw + 28, msg[2] + 18, 8); lc.fill();
+    lc.fillStyle = msg[1]; lc.fillText(msg[0], w / 2, h * 0.42);
+  }
 }
 
 function draw(now) {
