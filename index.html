@@ -59,6 +59,7 @@
   <fieldset><legend>설정</legend>
     줌 <input id="zoom" type="range" min="0.05" max="1.5" step="0.01" value="0.35">
     판정창 ± <input id="win" type="number" value="120" min="10" max="500">ms
+    <label title="GD에서 R(재시작) 누른 순간 = 0초. 녹화·연습·GD 매크로 기준 통일"><input type="checkbox" id="rsync" checked> R 리스폰 동기화</label>
     <button id="btnSave">파일 저장</button>
     <button id="btnLoad">불러오기</button>
     <input type="file" id="file" accept=".json,application/json" hidden>
@@ -148,20 +149,34 @@ function start(kind) {
   for (const n of notes) if (n.t >= from && n.t < to) end = Math.max(end, n.t + n.d);
   mode = kind;
   const first = notes.find(n => n.t >= from && n.t < to)?.t;
-  run = { speed, from, to, end: end + 300 * speed, guide, gi: 0, first };
+  run = { speed, from, to, end: end + 300 * speed, guide, gi: 0, first, base: notes.slice() };
   reset(performance.now());
 }
 function reset(now) {
   run.startReal = now + LEAD;
   run.startPt = run.from;
   run.gi = 0;
-  run.wait = mode === 'practice' && $('sync').checked && run.first != null;
+  run.waitR = rsync() && R_MODES.includes(mode);
+  run.wait = !run.waitR && mode === 'practice' && $('sync').checked && run.first != null;
   if (mode === 'practice') { inputs = []; res = {}; lastOff = null; recent = []; }
+}
+// R-sync: pressing R in GD (restart) is time zero for record / re-record / practice,
+// so recordings, practice and the GD macro all share the level start as their origin.
+const R_MODES = ['record', 'rerecord', 'practice'];
+const rsync = () => $('rsync').checked;
+function onRestart(time) {
+  if (!run || !rsync() || !R_MODES.includes(mode)) return;
+  if (mode === 'practice' && !run.waitR) finishAttempt();
+  held = null; downKeys.clear();
+  if (mode === 'practice') { inputs = []; res = {}; lastOff = null; recent = []; }
+  else notes = run.base.slice(); // died and restarted: drop this take
+  run.waitR = run.wait = false;
+  run.startPt = 0; run.startReal = time; run.gi = 0;
 }
 function stop() {
   if (!run) return;
   if (held) release(performance.now());
-  if (mode === 'record' && notes.length) { // trim leading silence to 500ms
+  if (mode === 'record' && notes.length && !rsync()) { // trim leading silence to 500ms
     const shift = notes[0].t - 500;
     notes.forEach(n => n.t -= shift);
   }
@@ -195,7 +210,7 @@ function finishAttempt() {
 
 // ---------- input ----------
 function press(time) {
-  if (held || !run || mode === 'replay' || mode === 'auto') return;
+  if (held || !run || run.waitR || mode === 'replay' || mode === 'auto') return;
   if (run.wait) { // first-click sync: your first click defines where the first note is
     run.wait = false;
     run.startReal = time - (run.first - run.startPt) / run.speed;
@@ -265,6 +280,7 @@ try {
     if (k === 'p' || document.hasFocus()) return;
     if (k === 'd') jump('helper', true, +v + hOff);
     else if (k === 'u') jump('helper', false, +v + hOff);
+    else if (k === 'r') onRestart(+v + hOff);
     else if (k === 'k') v === 'stop' ? stop() : v === 'gd' ? sendToGd() : start(v);
   };
 } catch {}
@@ -274,11 +290,14 @@ try {
 let gdMacro = null;
 async function sendToGd() {
   if (!helperOn) return alert('gdpt-helper.exe를 실행하고 http://localhost:8123 으로 열어야 합니다');
-  const list = notes.filter(n => sel ? n.t >= sel.a && n.t < sel.b : n.t >= cursor);
+  // R-sync: helper presses R itself and plays from the level start (up to the end of the range)
+  const r = rsync();
+  const list = notes.filter(n => r ? n.t < (sel ? sel.b : Infinity) : sel ? n.t >= sel.a && n.t < sel.b : n.t >= cursor);
   if (!list.length) return alert('보낼 노트가 없습니다');
   stop();
-  const body = list.map(n => `${(n.t - list[0].t).toFixed(3)},${n.d.toFixed(3)}`).join('\n');
-  try { await fetch('/macro', { method: 'POST', body }); } catch { alert('helper 연결 실패'); }
+  const t0 = r ? 0 : list[0].t;
+  const body = list.map(n => `${(n.t - t0).toFixed(3)},${n.d.toFixed(3)}`).join('\n');
+  try { await fetch(r ? '/macro?r=1' : '/macro', { method: 'POST', body }); } catch { alert('helper 연결 실패'); }
 }
 function stopGd() { if (helperOn && (gdMacro === 'armed' || gdMacro === 'playing')) fetch('/macro/stop', { method: 'POST' }).catch(() => {}); }
 lane.addEventListener('wheel', e => {
@@ -341,6 +360,7 @@ $('file').addEventListener('change', async e => {
 
 // ---------- loop ----------
 function tick(now) {
+  if (run.waitR) { run.startPt = 0; run.startReal = now; return; } // frozen at 0 until R
   if (run.wait) { // hold the view just before the first note until the first click
     run.startReal = now - (run.first - 300 * run.speed - run.startPt) / run.speed;
     return;
@@ -452,7 +472,10 @@ function draw(now) {
     lc.textAlign = 'right'; lc.fillText('빠름', hx - half - 6, my + 7);
     lc.textAlign = 'left'; lc.fillText('늦음', hx + half + 6, my + 7);
   }
-  if (run?.wait) {
+  if (run?.waitR) {
+    lc.fillStyle = '#f2c94c'; lc.font = '700 16px system-ui';
+    lc.fillText('R 대기 — GD에서 R을 눌러 재시작하면 시작', hx + 12, ly + lh + 64);
+  } else if (run?.wait) {
     lc.fillStyle = '#f2c94c'; lc.font = '700 16px system-ui';
     lc.fillText('첫 클릭 대기 — 첫 노트 타이밍에 누르세요', hx + 12, ly + lh + 64);
   } else if (run && p < run.from) {
@@ -473,7 +496,7 @@ function draw(now) {
     + (sel ? ` · 구간 ${(sel.a / 1000).toFixed(2)}–${(sel.b / 1000).toFixed(2)}s` : '')
     + (mode === 'record' ? ' · Esc / F9로 종료' : '')
     + (helperOn ? ' · 전역 입력 ON' : '')
-    + ({ armed: ' · GD 매크로 대기: GD에서 첫 노트를 직접 누르세요', playing: ' · GD 매크로 재생 중 (F9 정지)', done: ' · GD 매크로 끝', stopped: ' · GD 매크로 정지' }[gdMacro] ?? '');
+    + ({ starting: ' · GD 매크로: R 누르고 시작', armed: ' · GD 매크로 대기: GD에서 첫 노트를 직접 누르세요', playing: ' · GD 매크로 재생 중 (F9 정지)', done: ' · GD 매크로 끝', stopped: ' · GD 매크로 정지' }[gdMacro] ?? '');
 }
 
 function frame(now) {

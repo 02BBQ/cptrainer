@@ -53,6 +53,8 @@ class Helper {
     static volatile int macroGen;
     static double startT0;
     static ManualResetEvent startSignal = new ManualResetEvent(false);
+    static bool rDown;
+    struct Ev { public double t; public ushort vk, scan; public bool down; }
 
     static double NowMs() { return clock.ElapsedTicks * 1000.0 / Stopwatch.Frequency; }
     static string Fmt(double t) { return t.ToString("F3", CultureInfo.InvariantCulture); }
@@ -75,6 +77,10 @@ class Helper {
             bool injected = Marshal.ReadIntPtr(l, 16) == MARK; // our own macro presses: don't echo them back
             bool isDown = msg == 0x100 || msg == 0x104, isUp = msg == 0x101 || msg == 0x105;
             if (!injected && JUMP.Contains(vk) && (isDown || isUp)) Jump(vk, isDown);
+            else if (!injected && vk == 0x52 && (isDown || isUp)) { // R = GD restart: time zero of the level
+                if (isDown && !rDown) queue.Add("r," + Fmt(NowMs()));
+                rDown = isDown; // LL hooks also see auto-repeat downs
+            }
             else if (!injected && isDown && HOT.ContainsKey(vk)) {
                 if (vk == 0x78) StopMacro(); // F9 also cancels a GD macro
                 queue.Add("k," + HOT[vk]);
@@ -83,10 +89,10 @@ class Helper {
         return CallNextHookEx(kbHook, code, w, l); // never swallow input
     }
 
-    static void SendSpace(bool isDown) {
+    static void SendKey(ushort vk, ushort scan, bool isDown) {
         INPUT[] i = new INPUT[1];
         i[0].type = 1; // INPUT_KEYBOARD
-        i[0].ki.vk = 0x20; i[0].ki.scan = 0x39;
+        i[0].ki.vk = vk; i[0].ki.scan = scan;
         i[0].ki.flags = isDown ? 0u : 2u; // KEYEVENTF_KEYUP
         i[0].ki.extra = MARK;
         SendInput(1, i, Marshal.SizeOf(typeof(INPUT)));
@@ -100,29 +106,35 @@ class Helper {
         }
     }
 
-    // times are ms relative to the first note, which you press yourself; the rest is sent as Space
-    static void Play(double[] t, double[] d, int gen, ManualResetEvent go) {
-        List<KeyValuePair<double, bool>> ev = new List<KeyValuePair<double, bool>>();
-        for (int i = 1; i < t.Length; i++) {
-            ev.Add(new KeyValuePair<double, bool>(t[i], true));
-            ev.Add(new KeyValuePair<double, bool>(t[i] + Math.Max(d[i], 16), false)); // GD needs the key down for a frame
+    static Ev E(double t, ushort vk, ushort scan, bool down) { Ev e; e.t = t; e.vk = vk; e.scan = scan; e.down = down; return e; }
+
+    // rMode: helper presses R (GD restart) itself at t=0 and plays every note; t = ms since R.
+    // otherwise: t = ms since the first note, which you press yourself; the rest is sent as Space.
+    static void Play(double[] t, double[] d, int gen, ManualResetEvent go, bool rMode) {
+        List<Ev> ev = new List<Ev>();
+        for (int i = rMode ? 0 : 1; i < t.Length; i++) {
+            ev.Add(E(t[i], 0x20, 0x39, true));
+            ev.Add(E(t[i] + Math.Max(d[i], 16), 0x20, 0x39, false)); // GD needs the key down for a frame
         }
-        ev.Sort((a, b) => a.Key != b.Key ? a.Key.CompareTo(b.Key) : a.Value.CompareTo(b.Value)); // release before press on ties
+        if (rMode) { ev.Add(E(0, 0x52, 0x13, true)); ev.Add(E(30, 0x52, 0x13, false)); }
+        ev.Sort((a, b) => a.t != b.t ? a.t.CompareTo(b.t) : a.down.CompareTo(b.down)); // release before press on ties
         SendInput(0, new INPUT[1], Marshal.SizeOf(typeof(INPUT))); // JIT the P/Invoke path before it matters
         WaitUntil(NowMs());
-        while (!go.WaitOne(100)) if (gen != macroGen) return; // cancelled before it started
-        double t0 = startT0;
+        double t0;
+        if (rMode) { Thread.Sleep(50); if (gen != macroGen) return; t0 = NowMs(); }
+        else { while (!go.WaitOne(100)) if (gen != macroGen) return; t0 = startT0; } // cancelled before it started
         queue.Add("m,playing");
-        bool held = false;
+        bool spaceHeld = false;
         double worst = 0;
-        foreach (KeyValuePair<double, bool> e in ev) {
-            WaitUntil(t0 + e.Key);
-            if (gen != macroGen) { if (held) SendSpace(false); queue.Add("m,stopped"); return; }
-            double late = NowMs() - (t0 + e.Key);
-            SendSpace(e.Value); held = e.Value;
+        foreach (Ev e in ev) {
+            WaitUntil(t0 + e.t);
+            if (gen != macroGen) { if (spaceHeld) SendKey(0x20, 0x39, false); queue.Add("m,stopped"); return; }
+            double late = NowMs() - (t0 + e.t);
+            SendKey(e.vk, e.scan, e.down);
+            if (e.vk == 0x20) spaceHeld = e.down;
             worst = Math.Max(worst, late);
         }
-        Console.WriteLine("macro done: " + ev.Count / 2 + " notes, worst lateness " + worst.ToString("F2") + " ms");
+        Console.WriteLine("macro done: " + t.Length + " notes" + (rMode ? " from R" : "") + ", worst lateness " + worst.ToString("F2") + " ms");
         queue.Add("m,done");
     }
 
@@ -160,7 +172,8 @@ class Helper {
                     s.Write("data: p," + Fmt(NowMs()) + "\n\n"); s.Flush();
                     lock (clients) clients.Add(s);
                 } else if (path == "/macro" && ctx.Request.HttpMethod == "POST") {
-                    // body: one "t,d" line per note, ms at real speed, t relative to the first note
+                    // body: one "t,d" line per note, ms at real speed; ?r=1 means t is relative to an R restart
+                    bool rMode = ctx.Request.QueryString["r"] == "1";
                     string body = new StreamReader(ctx.Request.InputStream).ReadToEnd();
                     List<double> t = new List<double>(), d = new List<double>();
                     foreach (string line in body.Split('\n')) {
@@ -173,8 +186,8 @@ class Helper {
                     if (t.Count > 0) {
                         startSignal = new ManualResetEvent(false);
                         double[] ta = t.ToArray(), da = d.ToArray(); int gen = macroGen; ManualResetEvent go = startSignal;
-                        new Thread(() => Play(ta, da, gen, go)) { IsBackground = true, Priority = ThreadPriority.Highest }.Start();
-                        armed = true; queue.Add("m,armed");
+                        new Thread(() => Play(ta, da, gen, go, rMode)) { IsBackground = true, Priority = ThreadPriority.Highest }.Start();
+                        if (rMode) queue.Add("m,starting"); else { armed = true; queue.Add("m,armed"); }
                     }
                     r.Close();
                 } else if (path == "/macro/stop" && ctx.Request.HttpMethod == "POST") {
