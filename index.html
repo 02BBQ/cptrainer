@@ -13,7 +13,7 @@
   h1 b { color:var(--accent); }
   #status { color:var(--dim); font-family:ui-monospace, monospace; }
   canvas { display:block; width:100%; background:#0b0c0e; touch-action:none; }
-  #lane { height:230px; }
+  #lane { height:300px; }
   #overview { height:44px; border-top:1px solid var(--line); cursor:crosshair; }
   .controls { display:flex; flex-wrap:wrap; gap:10px; padding:12px 16px; }
   fieldset { border:1px solid var(--line); background:var(--panel); border-radius:8px; padding:8px 10px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:0; }
@@ -373,7 +373,7 @@ function draw(now) {
 
   // lane
   const [w, h] = fit(lane);
-  const hx = Math.min(w * 0.3, 360), ly = 70, lh = 56;
+  const hx = Math.min(w * 0.3, 360), ly = 70, lh = 110;
   const X = t => hx + (t - p) * z;
   lc.clearRect(0, 0, w, h);
   lc.fillStyle = '#15171a'; lc.fillRect(0, ly, w, lh);
@@ -383,7 +383,7 @@ function draw(now) {
     lc.fillRect(X(a), ly, Math.min(w, X(b)) - X(a), lh);
   }
   const t0 = p - hx / z, t1 = p + (w - hx) / z;
-  lc.font = '600 12px ui-monospace, monospace'; lc.textAlign = 'center';
+  lc.font = '700 15px ui-monospace, monospace'; lc.textAlign = 'center';
   notes.forEach((n, i) => {
     const d = live(n);
     if (n.t + d < t0 || n.t > t1) return;
@@ -391,15 +391,15 @@ function draw(now) {
     const col = r?.miss ? '#555' : colLen(Math.max(d, 1));
     // body: bar from press to release, end cap marks the release
     lc.globalAlpha = r?.miss ? 0.5 : 0.55; lc.fillStyle = col;
-    lc.fillRect(x0, cy - 10, Math.max(0, x1 - x0), 20);
+    lc.fillRect(x0, cy - 24, Math.max(0, x1 - x0), 48);
     lc.globalAlpha = 1;
-    if (d >= HOLD) lc.fillRect(x1 - 3, cy - 16, 6, 32);
-    lc.beginPath(); lc.arc(x0, cy, 13, 0, Math.PI * 2); lc.fill();
+    if (d >= HOLD) lc.fillRect(x1 - 4, cy - 36, 8, 72);
+    lc.beginPath(); lc.arc(x0, cy, 28, 0, Math.PI * 2); lc.fill();
     if (r && !r.miss) { // judged ring sits outside the note so it never blends with a red note
-      lc.beginPath(); lc.arc(x0, cy, 18, 0, Math.PI * 2);
-      lc.strokeStyle = r.press != null ? colOff(r.press) : '#fff'; lc.lineWidth = 3; lc.stroke();
+      lc.beginPath(); lc.arc(x0, cy, 35, 0, Math.PI * 2);
+      lc.strokeStyle = r.press != null ? colOff(r.press) : '#fff'; lc.lineWidth = 4; lc.stroke();
     }
-    if (x1 - x0 > 60) { lc.fillStyle = '#111'; lc.fillText(Math.round(d) + 'ms', (x0 + 13 + x1) / 2, cy + 4); }
+    if (x1 - x0 > 90) { lc.fillStyle = '#111'; lc.fillText(Math.round(d) + 'ms', (x0 + 28 + x1) / 2, cy + 5); }
     if (r?.press != null) {
       lc.fillStyle = colOff(r.press); lc.fillText(fmt(r.press), x0, ly - 8);
       if (r.release != null) { lc.fillStyle = colOff(r.release); lc.fillText('↑' + fmt(r.release), x1, ly - 8); }
@@ -410,11 +410,11 @@ function draw(now) {
     const a = X(x.t), b = X(x.t + live(x));
     if (b < 0 || a > w) continue;
     lc.fillStyle = x.note != null ? '#d0d0d0' : '#777';
-    lc.fillRect(a, ly + lh + 10, Math.max(2, b - a), 8);
+    lc.fillRect(a, ly + lh + 12, Math.max(3, b - a), 14);
   }
   // macro playback: jump button lights while the bot is holding
   if (mode === 'auto' && notes.some(n => p >= n.t && p < n.t + Math.max(n.d, 40))) {
-    lc.fillStyle = '#4cd59a'; lc.fillRect(hx - 18, ly + lh + 26, 36, 14);
+    lc.fillStyle = '#4cd59a'; lc.fillRect(hx - 22, ly + lh + 32, 44, 16);
   }
   // hit line + readouts
   lc.fillStyle = '#fff'; lc.fillRect(hx - 1, ly - 30, 2, lh + 50);
@@ -425,7 +425,7 @@ function draw(now) {
   }
   // hit-error meter: left = early, right = late, colour = how far off; latest hit brightest
   if (mode === 'practice' || recent.length) {
-    const my = 200, half = 130, scale = half / win();
+    const my = ly + lh + 92, half = 130, scale = half / win();
     for (let x = -half; x < half; x += 2) { lc.fillStyle = colOff(x / scale); lc.globalAlpha = 0.25; lc.fillRect(hx + x, my, 2, 6); }
     recent.slice(-20).forEach((o, k, a) => {
       lc.globalAlpha = 0.3 + 0.7 * (k + 1) / a.length;
@@ -438,10 +438,10 @@ function draw(now) {
   }
   if (run?.wait) {
     lc.fillStyle = '#f2c94c'; lc.font = '700 16px system-ui';
-    lc.fillText('첫 클릭 대기 — 첫 노트 타이밍에 누르세요', hx + 12, ly + lh + 60);
+    lc.fillText('첫 클릭 대기 — 첫 노트 타이밍에 누르세요', hx + 12, ly + lh + 64);
   } else if (run && p < run.from) {
     lc.fillStyle = '#f2c94c'; lc.font = '700 28px system-ui';
-    lc.fillText(Math.ceil((run.from - p) / run.speed / 500) + '', hx + 12, ly + lh + 60);
+    lc.fillText(Math.ceil((run.from - p) / run.speed / 500) + '', hx + 12, ly + lh + 64);
   }
 
   // overview
