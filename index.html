@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GD Pattern Trainer</title>
+<style>
+  :root { --bg:#111214; --panel:#1b1d21; --line:#2c2f35; --text:#e6e6e6; --dim:#8a8f98; --accent:#f2c94c; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 system-ui, "Malgun Gothic", sans-serif; }
+  header { display:flex; align-items:baseline; gap:16px; padding:14px 16px; flex-wrap:wrap; }
+  h1 { margin:0; font-size:20px; letter-spacing:.5px; }
+  h1 b { color:var(--accent); }
+  #status { color:var(--dim); font-family:ui-monospace, monospace; }
+  canvas { display:block; width:100%; background:#0b0c0e; touch-action:none; }
+  #lane { height:200px; cursor:pointer; }
+  #overview { height:44px; border-top:1px solid var(--line); cursor:crosshair; }
+  .controls { display:flex; flex-wrap:wrap; gap:10px; padding:12px 16px; }
+  fieldset { border:1px solid var(--line); background:var(--panel); border-radius:8px; padding:8px 10px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:0; }
+  legend { color:var(--dim); font-size:12px; padding:0 4px; }
+  button { background:#2a2d33; color:var(--text); border:1px solid #3a3e46; border-radius:6px; padding:5px 10px; cursor:pointer; font:inherit; }
+  button:hover { background:#353941; }
+  button.primary { background:var(--accent); color:#111; border-color:var(--accent); font-weight:600; }
+  input[type=number] { width:64px; background:#0f1012; color:var(--text); border:1px solid #3a3e46; border-radius:4px; padding:3px 5px; font:inherit; }
+  #stats { padding:0 16px 8px; font-family:ui-monospace, monospace; white-space:pre-wrap; color:var(--dim); }
+  #stats b { color:var(--text); }
+  .help { padding:0 16px 24px; color:var(--dim); font-size:13px; }
+  kbd { background:#2a2d33; border:1px solid #3a3e46; border-radius:3px; padding:0 4px; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>GD <b>Pattern</b> Trainer</h1>
+  <span id="status">대기</span>
+</header>
+<canvas id="lane"></canvas>
+<canvas id="overview"></canvas>
+
+<div class="controls">
+  <fieldset><legend>녹화</legend>
+    속도 <input id="recSpeed" type="number" value="0.5" step="0.05" min="0.05" max="4">x
+    <button id="btnRec" class="primary">전체 녹화 <kbd>R</kbd></button>
+    <button id="btnReRec">구간 재녹화 <kbd>T</kbd></button>
+    <button id="btnUndo">되돌리기</button>
+  </fieldset>
+  <fieldset><legend>연습</legend>
+    속도 <input id="playSpeed" type="number" value="1" step="0.05" min="0.05" max="4">x
+    <label><input type="checkbox" id="loop" checked> 반복</label>
+    <label><input type="checkbox" id="guide" checked> 가이드 소리</label>
+    <button id="btnPlay" class="primary">연습 <kbd>P</kbd></button>
+    <button id="btnReplay">리플레이 <kbd>V</kbd></button>
+    <button id="btnStop">정지 <kbd>Esc</kbd></button>
+  </fieldset>
+  <fieldset><legend>설정</legend>
+    줌 <input id="zoom" type="range" min="0.05" max="1.5" step="0.01" value="0.35">
+    판정창 ± <input id="win" type="number" value="120" min="10" max="500">ms
+    <button id="btnSave">파일 저장</button>
+    <button id="btnLoad">불러오기</button>
+    <input type="file" id="file" accept=".json,application/json" hidden>
+  </fieldset>
+</div>
+<div id="stats"></div>
+<p class="help">
+  입력: <kbd>Space</kbd> <kbd>↑</kbd> <kbd>W</kbd> 또는 레인 클릭 (누르고 있으면 홀드).
+  하단 바: <b>드래그</b> = 구간 선택(연습 / 재녹화 대상), <b>클릭</b> = 시작 위치 이동 + 구간 해제. 레인 위 휠 = 스크롤.<br>
+  녹화 속도 0.2x로 녹화하면 실제 패턴은 5배 빠르게 저장됨 → 연습 속도 1x로 원래 속도 연습.
+  구간 재녹화는 구간 앞 1.5초부터 기존 패턴(가이드 소리)을 들려준 뒤 구간 안의 입력만 교체.
+</p>
+
+<script>
+const $ = id => document.getElementById(id);
+const lane = $('lane'), ov = $('overview');
+const lc = lane.getContext('2d'), oc = ov.getContext('2d');
+
+const LEAD = 1500;   // real ms of run-up before a run starts
+const HOLD = 60;     // pattern ms: notes held longer than this get release judgement
+
+let notes = load();  // [{t, d}] in pattern ms at 1x, sorted by t
+let backup = null;   // one-level undo
+let sel = null;      // {a, b} selected range (pattern ms)
+let cursor = 0;      // idle view position / practice start without a range
+let mode = 'idle';   // idle | record | rerecord | practice | replay
+let run = null;
+let inputs = [], res = {}, held = null, lastOff = null;
+let lastAttempt = null, history = [];
+
+function load() {
+  try {
+    const n = JSON.parse(localStorage.getItem('gdpt-notes'));
+    return valid(n) ? n : [];
+  } catch { return []; }
+}
+function persist() {
+  res = {}; lastAttempt = null; // results are keyed by note index, stale once notes change
+  try { localStorage.setItem('gdpt-notes', JSON.stringify(notes)); } catch {} }
+function valid(n) { return Array.isArray(n) && n.every(x => Number.isFinite(x?.t) && Number.isFinite(x?.d)); }
+const patLen = () => notes.reduce((m, n) => Math.max(m, n.t + n.d), 0) + 500;
+const viewLen = () => patLen() + 2000; // room to append via re-record
+const pt = now => run.startPt + (now - run.startReal) * run.speed;
+const speedOf = id => Math.min(4, Math.max(0.05, +$(id).value || 1));
+const win = () => +$('win').value || 120;
+
+// ---------- audio ----------
+let ac = null;
+function ensureAudio() { ac ??= new AudioContext(); ac.resume(); }
+function beep(freq, delaySec = 0) {
+  if (!ac) return;
+  const t = ac.currentTime + Math.max(0, delaySec);
+  const o = ac.createOscillator(), g = ac.createGain();
+  o.frequency.value = freq; o.connect(g); g.connect(ac.destination);
+  g.gain.setValueAtTime(0.25, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+  o.start(t); o.stop(t + 0.06);
+}
+
+// ---------- runs ----------
+function start(kind) {
+  stop();
+  if (kind !== 'record' && !notes.length) return alert('먼저 패턴을 녹화하세요');
+  if (kind === 'rerecord' && !sel) return alert('하단 바를 드래그해서 재녹화할 구간을 선택하세요');
+  if (kind === 'replay' && !lastAttempt) return alert('리플레이할 연습 기록이 없습니다');
+  ensureAudio();
+  let speed, from, to, guide = [];
+  if (kind === 'record') {
+    backup = notes; notes = [];
+    speed = speedOf('recSpeed'); from = 0; to = Infinity;
+  } else if (kind === 'rerecord') {
+    backup = notes;
+    speed = speedOf('recSpeed'); ({ a: from, b: to } = sel);
+    notes = notes.filter(n => n.t < from || n.t >= to);
+    guide = notes.slice();
+  } else if (kind === 'practice') {
+    speed = speedOf('playSpeed');
+    from = sel ? sel.a : cursor; to = sel ? sel.b : patLen();
+    guide = $('guide').checked ? notes : [];
+  } else {
+    ({ speed, from, to } = lastAttempt);
+    guide = lastAttempt.inputs; // hear your own clicks
+  }
+  // run ends after the last hold that starts inside the range is released
+  let end = to;
+  for (const n of notes) if (n.t >= from && n.t < to) end = Math.max(end, n.t + n.d);
+  mode = kind;
+  run = { speed, from, to, end: end + 300 * speed, guide, gi: 0 };
+  reset(performance.now());
+}
+function reset(now) {
+  run.startReal = now + LEAD;
+  run.startPt = run.from;
+  run.gi = 0;
+  if (mode === 'practice') { inputs = []; res = {}; lastOff = null; }
+}
+function stop() {
+  if (!run) return;
+  if (held) release(performance.now());
+  if (mode === 'record' && notes.length) { // trim leading silence to 500ms
+    const shift = notes[0].t - 500;
+    notes.forEach(n => n.t -= shift);
+  }
+  if (mode === 'record' || mode === 'rerecord') {
+    notes.sort((a, b) => a.t - b.t);
+    if (!notes.length) notes = backup ?? [];
+    persist();
+  }
+  if (mode === 'practice') finishAttempt();
+  run = null; mode = 'idle';
+}
+const targets = () => notes.map((n, i) => i).filter(i => notes[i].t >= run.from && notes[i].t < run.to);
+
+function finishAttempt() {
+  if (!inputs.length) return;
+  const idx = targets();
+  const hits = idx.filter(i => res[i] && !res[i].miss).map(i => res[i].press);
+  const rel = idx.filter(i => res[i]?.release != null).map(i => res[i].release);
+  lastAttempt = { inputs, res, from: run.from, to: run.to, speed: run.speed };
+  const s = a => {
+    if (!a.length) return '-';
+    const m = a.reduce((x, y) => x + y, 0) / a.length;
+    const sd = Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / a.length);
+    return `평균 ${m >= 0 ? '+' : ''}${m.toFixed(1)}ms  편차 ${sd.toFixed(1)}ms`;
+  };
+  const extra = inputs.length - hits.length;
+  history.unshift(`${run.speed}x  히트 <b>${hits.length}/${idx.length}</b>  빈클릭 ${extra}  | 누름 ${s(hits)} | 뗌 ${s(rel)}`);
+  history.length = Math.min(history.length, 8);
+  $('stats').innerHTML = history.join('\n');
+}
+
+// ---------- input ----------
+function press(time) {
+  if (held || !run || mode === 'replay') return;
+  const t = pt(time);
+  if (mode === 'record' || mode === 'rerecord') {
+    if (t < run.from || t >= run.to) return;
+    held = { t, d: 0 }; notes.push(held); beep(880);
+  } else {
+    held = { t, d: 0 }; inputs.push(held);
+    const W = win() * run.speed;
+    let best = -1, bd = Infinity;
+    for (let i = 0; i < notes.length; i++) {
+      const n = notes[i];
+      if (res[i] || n.t < run.from || n.t >= run.to) continue;
+      const dd = Math.abs(t - n.t);
+      if (dd < bd) { bd = dd; best = i; }
+    }
+    if (best >= 0 && bd <= W) {
+      held.note = best;
+      lastOff = (t - notes[best].t) / run.speed;
+      res[best] = { press: lastOff };
+    }
+  }
+}
+function release(time) {
+  const h = held; held = null;
+  if (!h || !run) return;
+  h.d = Math.max(0, Math.min(pt(time), run.to) - h.t);
+  if (mode === 'practice' && h.note != null) {
+    const n = notes[h.note];
+    if (n.d >= HOLD) res[h.note].release = (h.t + h.d - n.t - n.d) / run.speed;
+  }
+}
+
+const KEYS = new Set(['Space', 'ArrowUp', 'KeyW']);
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' && e.target.type !== 'checkbox' && e.target.type !== 'range') return;
+  if (KEYS.has(e.code)) { e.preventDefault(); if (!e.repeat) press(e.timeStamp); return; }
+  if (e.repeat) return;
+  const act = { KeyR: () => start('record'), KeyT: () => start('rerecord'), KeyP: () => start('practice'), KeyV: () => start('replay'), Escape: stop }[e.code];
+  if (act) { e.preventDefault(); act(); }
+});
+addEventListener('keyup', e => { if (KEYS.has(e.code)) { e.preventDefault(); release(e.timeStamp); } });
+lane.addEventListener('pointerdown', e => { lane.setPointerCapture(e.pointerId); press(e.timeStamp); });
+lane.addEventListener('pointerup', e => release(e.timeStamp));
+lane.addEventListener('wheel', e => {
+  if (run) return;
+  e.preventDefault();
+  cursor = Math.min(viewLen(), Math.max(0, cursor + e.deltaY / +$('zoom').value * 0.5));
+}, { passive: false });
+addEventListener('blur', () => release(performance.now()));
+
+// overview: drag = select range, click = move cursor
+let drag = null;
+const xToT = x => Math.min(viewLen(), Math.max(0, x / ov.clientWidth * viewLen()));
+ov.addEventListener('pointerdown', e => { if (run) return; drag = e.offsetX; ov.setPointerCapture(e.pointerId); });
+ov.addEventListener('pointermove', e => {
+  if (drag == null || Math.abs(e.offsetX - drag) <= 4) return;
+  sel = { a: xToT(Math.min(drag, e.offsetX)), b: xToT(Math.max(drag, e.offsetX)) };
+});
+ov.addEventListener('pointerup', e => {
+  if (drag != null && Math.abs(e.offsetX - drag) <= 4) { cursor = xToT(e.offsetX); sel = null; }
+  drag = null;
+});
+
+// buttons (blur so Space never re-triggers them)
+const on = (id, fn) => $(id).addEventListener('click', e => { e.currentTarget.blur(); fn(); });
+on('btnRec', () => start('record'));
+on('btnReRec', () => start('rerecord'));
+on('btnPlay', () => start('practice'));
+on('btnReplay', () => start('replay'));
+on('btnStop', stop);
+on('btnUndo', () => { stop(); if (backup) { [notes, backup] = [backup, notes]; persist(); } });
+on('btnSave', () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify({ notes })], { type: 'application/json' }));
+  a.download = 'pattern.json'; a.click(); URL.revokeObjectURL(a.href);
+});
+on('btnLoad', () => $('file').click());
+$('file').addEventListener('change', async e => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  try {
+    const n = JSON.parse(await f.text()).notes;
+    if (!valid(n)) throw 0;
+    stop(); backup = notes; notes = n.sort((a, b) => a.t - b.t); sel = null; cursor = 0; persist();
+  } catch { alert('패턴 파일이 아닙니다'); }
+});
+
+// ---------- loop ----------
+function tick(now) {
+  const p = pt(now);
+  // schedule guide beeps slightly ahead on the audio clock (no frame jitter)
+  const ahead = p + 150 * run.speed, g = run.guide;
+  while (run.gi < g.length && g[run.gi].t < ahead) {
+    const n = g[run.gi++];
+    if (n.t < p - 5 || n.t < run.from - LEAD * run.speed) continue;
+    if (mode === 'replay' || mode === 'rerecord' || $('guide').checked)
+      beep(mode === 'replay' ? 660 : 1320, (run.startReal + (n.t - run.startPt) / run.speed - now) / 1000);
+  }
+  if (mode === 'practice') {
+    const W = win() * run.speed;
+    for (const i of targets()) if (!res[i] && p > notes[i].t + W) res[i] = { miss: true };
+  }
+  if (mode === 'rerecord' && p >= run.to) return stop();
+  if (mode !== 'record' && p >= run.end) {
+    if (mode === 'practice') { finishAttempt(); if ($('loop').checked) return reset(now); }
+    stop();
+  }
+}
+
+const colOff = o => Math.abs(o) <= 20 ? '#4cd59a' : Math.abs(o) <= 50 ? '#f2c94c' : '#f2994a';
+const fmt = o => (o >= 0 ? '+' : '') + o.toFixed(1);
+
+function fit(c) {
+  const r = devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * r)) { c.width = Math.round(w * r); c.height = Math.round(h * r); }
+  c.getContext('2d').setTransform(r, 0, 0, r, 0, 0);
+  return [w, h];
+}
+
+function draw(now) {
+  const p = run ? pt(now) : cursor;
+  const z = +$('zoom').value;
+  const R = mode === 'replay' ? lastAttempt.res : res;
+  const I = mode === 'replay' ? lastAttempt.inputs : mode === 'practice' ? inputs : [];
+  const live = x => x === held ? Math.max(0, p - x.t) : x.d;
+
+  // lane
+  const [w, h] = fit(lane);
+  const hx = Math.min(w * 0.3, 360), ly = 70, lh = 56;
+  const X = t => hx + (t - p) * z;
+  lc.clearRect(0, 0, w, h);
+  lc.fillStyle = '#15171a'; lc.fillRect(0, ly, w, lh);
+  if (run || sel) { // dim outside active range
+    const a = run ? run.from : sel.a, b = run ? run.to : sel.b;
+    lc.fillStyle = 'rgba(242,201,76,0.06)';
+    lc.fillRect(X(a), ly, Math.min(w, X(b)) - X(a), lh);
+  }
+  const t0 = p - hx / z, t1 = p + (w - hx) / z;
+  lc.font = '600 12px ui-monospace, monospace'; lc.textAlign = 'center';
+  notes.forEach((n, i) => {
+    const d = live(n);
+    if (n.t + d < t0 || n.t > t1) return;
+    const r = R[i], x0 = X(n.t), x1 = X(n.t + d), cy = ly + lh / 2;
+    const col = r ? (r.miss ? '#eb5757' : '#4cd59a') : '#e0883a';
+    lc.fillStyle = col + '99'; lc.fillRect(x0, cy - 9, Math.max(0, x1 - x0), 18);
+    if (d >= HOLD) { lc.fillStyle = '#f2c94c'; lc.fillRect(x1 - 2, ly + 4, 4, lh - 8); }
+    lc.beginPath(); lc.arc(x0, cy, 13, 0, Math.PI * 2); lc.fillStyle = col; lc.fill();
+    lc.fillStyle = '#111'; lc.fillText(i + 1, x0, cy + 4);
+    if (r && !r.miss) {
+      lc.fillStyle = colOff(r.press); lc.fillText(fmt(r.press), x0, ly - 8);
+      if (r.release != null) { lc.fillStyle = colOff(r.release); lc.fillText('↑' + fmt(r.release), x1, ly - 8); }
+    } else if (r?.miss) { lc.fillStyle = '#eb5757'; lc.fillText('MISS', x0, ly - 8); }
+  });
+  // player inputs
+  for (const x of I) {
+    const a = X(x.t), b = X(x.t + live(x));
+    if (b < 0 || a > w) continue;
+    lc.fillStyle = x.note != null ? '#d0d0d0' : '#777';
+    lc.fillRect(a, ly + lh + 10, Math.max(2, b - a), 8);
+  }
+  // hit line + readouts
+  lc.fillStyle = '#fff'; lc.fillRect(hx - 1, ly - 30, 2, lh + 50);
+  lc.textAlign = 'left'; lc.font = '600 13px ui-monospace, monospace';
+  if (lastOff != null && mode === 'practice') { lc.fillStyle = colOff(lastOff); lc.fillText(fmt(lastOff) + ' ms', hx + 8, ly - 32); }
+  if (run && p < run.from) {
+    lc.fillStyle = '#f2c94c'; lc.font = '700 28px system-ui';
+    lc.fillText(Math.ceil((run.from - p) / run.speed / 500) + '', hx + 12, ly + lh + 60);
+  }
+
+  // overview
+  const [ow, oh] = fit(ov), L = viewLen(), OX = t => t / L * ow;
+  oc.clearRect(0, 0, ow, oh);
+  if (sel) { oc.fillStyle = 'rgba(242,201,76,0.18)'; oc.fillRect(OX(sel.a), 0, OX(sel.b) - OX(sel.a), oh); }
+  oc.fillStyle = '#e0883a';
+  for (const n of notes) oc.fillRect(OX(n.t), oh * 0.3, Math.max(1, OX(n.d)), oh * 0.4);
+  oc.fillStyle = '#fff'; oc.fillRect(OX(p) - 1, 0, 2, oh);
+  oc.fillStyle = '#555'; oc.fillRect(OX(patLen()), 0, 1, oh);
+
+  const names = { idle: '대기', record: '녹화 중', rerecord: '구간 재녹화', practice: '연습', replay: '리플레이' };
+  $('status').textContent = `${names[mode]}${run ? ' ' + run.speed + 'x' : ''} · ${(p / 1000).toFixed(2)}s · 노트 ${notes.length}개`
+    + (sel ? ` · 구간 ${(sel.a / 1000).toFixed(2)}–${(sel.b / 1000).toFixed(2)}s` : '')
+    + (mode === 'record' ? ' · Esc로 종료' : '');
+}
+
+function frame(now) {
+  if (run) tick(now);
+  draw(now);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
