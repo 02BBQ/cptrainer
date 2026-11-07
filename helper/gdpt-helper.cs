@@ -23,14 +23,13 @@ class Helper {
     const int PORT = 8123;
     // Geometry Dash default jump inputs, all treated as one button (single player only)
     static readonly HashSet<int> JUMP = new HashSet<int> { 0x20 /*Space*/, 0x26 /*Up*/, 0x57 /*W*/ };
-    const int MOUSE = -1;
     // global hotkeys so the trainer can be driven from inside GD
     static readonly Dictionary<int, string> HOT = new Dictionary<int, string> {
         { 0x75, "record" }, { 0x76, "rerecord" }, { 0x77, "practice" }, { 0x78, "stop" }, { 0x79, "auto" } // F6..F10
     };
 
-    static readonly HookProc kbProc = KbHook, msProc = MsHook; // fields keep delegates alive for the GC
-    static IntPtr kbHook, msHook;
+    static readonly HookProc kbProc = KbHook; // field keep delegates alive for the GC
+    static IntPtr kbHook;
     static readonly Stopwatch clock = Stopwatch.StartNew();
     static readonly HashSet<int> down = new HashSet<int>();
     static readonly BlockingCollection<string> queue = new BlockingCollection<string>();
@@ -55,15 +54,6 @@ class Helper {
             else if (isDown && HOT.ContainsKey(vk)) queue.Add("k," + HOT[vk]);
         }
         return CallNextHookEx(kbHook, code, w, l); // never swallow input
-    }
-
-    static IntPtr MsHook(int code, IntPtr w, IntPtr l) {
-        if (code >= 0) {
-            int msg = (int)w;
-            if (msg == 0x201) Jump(MOUSE, true);
-            else if (msg == 0x202) Jump(MOUSE, false);
-        }
-        return CallNextHookEx(msHook, code, w, l);
     }
 
     // hook callbacks must return fast, so network writes happen here
@@ -117,11 +107,10 @@ class Helper {
 
         IntPtr mod = GetModuleHandle(null);
         kbHook = SetWindowsHookEx(13 /*WH_KEYBOARD_LL*/, kbProc, mod, 0);
-        msHook = SetWindowsHookEx(14 /*WH_MOUSE_LL*/, msProc, mod, 0);
 
         string url = "http://localhost:" + PORT + "/";
         Console.WriteLine("GD Pattern Trainer helper running: " + url);
-        Console.WriteLine("Jump: Space / Up / W / Left click (global)");
+        Console.WriteLine("Jump: Space / Up / W (global, mouse ignored)");
         Console.WriteLine("Hotkeys: F6 record, F7 re-record, F8 practice, F9 stop, F10 macro playback");
         Console.WriteLine("Close this window to quit.");
         Process.Start(url);

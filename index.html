@@ -13,7 +13,7 @@
   h1 b { color:var(--accent); }
   #status { color:var(--dim); font-family:ui-monospace, monospace; }
   canvas { display:block; width:100%; background:#0b0c0e; touch-action:none; }
-  #lane { height:200px; cursor:pointer; }
+  #lane { height:200px; }
   #overview { height:44px; border-top:1px solid var(--line); cursor:crosshair; }
   .controls { display:flex; flex-wrap:wrap; gap:10px; padding:12px 16px; }
   fieldset { border:1px solid var(--line); background:var(--panel); border-radius:8px; padding:8px 10px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:0; }
@@ -64,7 +64,7 @@
 </div>
 <div id="stats"></div>
 <p class="help">
-  입력: <kbd>Space</kbd> <kbd>↑</kbd> <kbd>W</kbd> 또는 레인 클릭 (누르고 있으면 홀드).
+  입력: <kbd>Space</kbd> <kbd>↑</kbd> <kbd>W</kbd> (누르고 있으면 홀드, 마우스 클릭은 무시).
   하단 바: <b>드래그</b> = 구간 선택(연습 / 재녹화 대상), <b>클릭</b> = 시작 위치 이동 + 구간 해제. 레인 위 휠 = 스크롤.<br>
   녹화 속도 0.2x로 녹화하면 실제 패턴은 5배 빠르게 저장됨 → 연습 속도 1x로 원래 속도 연습.
   구간 재녹화는 구간 앞 1.5초부터 기존 패턴(가이드 소리)을 들려준 뒤 구간 안의 입력만 교체.
@@ -244,8 +244,6 @@ addEventListener('keydown', e => {
   if (act) { e.preventDefault(); act(); }
 });
 addEventListener('keyup', e => { if (KEYS.has(e.code)) { e.preventDefault(); jump(e.code, false, e.timeStamp); } });
-lane.addEventListener('pointerdown', e => { lane.setPointerCapture(e.pointerId); jump('mouse', true, e.timeStamp); });
-lane.addEventListener('pointerup', e => jump('mouse', false, e.timeStamp));
 
 // global input from gdpt-helper.exe, used only while this page is NOT focused (e.g. playing GD)
 let helperOn = false, hOff = Infinity;
