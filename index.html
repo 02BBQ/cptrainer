@@ -110,6 +110,9 @@ const win = () => +$('win').value || 120;
 // ---------- audio ----------
 let ac = null;
 function ensureAudio() { ac ??= new AudioContext(); ac.resume(); }
+// browsers only allow audio after a real click/key in the page; runs started from GD hotkeys (F6–F11)
+// aren't one, so unlock on the first interaction and keep it for the session
+for (const ev of ['pointerdown', 'keydown']) addEventListener(ev, ensureAudio, { capture: true });
 function beep(freq, delaySec = 0) {
   if (!ac) return;
   const t = ac.currentTime + Math.max(0, delaySec);
@@ -331,8 +334,7 @@ function gdState(v, arg) {
   }
   if ((v === 'done' || v === 'stopped') && mode === 'gd') {
     lastAttempt = { inputs, res, from: run.from, to: run.to, speed: run.speed }; // V replays what the bot did
-    const p = pt(performance.now());
-    setTimeout(() => { if (mode === 'gd') { stop(); cursor = p; } }, 800);
+    setTimeout(() => { if (mode === 'gd') stop(); }, 800); // leave the cursor alone: A / P must still start where you set it
   }
 }
 // helper sent a key: s,<vk>,<down 1|0>,<helper time>,<lateness ms>
@@ -566,11 +568,16 @@ function draw(now) {
     + (sel ? ` · 구간 ${(sel.a / 1000).toFixed(2)}–${(sel.b / 1000).toFixed(2)}s` : '')
     + (mode === 'record' ? ' · Esc / F9로 종료' : '')
     + (helperOn ? ' · 전역 입력 ON' : '')
+    + (ac?.state === 'running' ? '' : ' · 🔇 소리 잠김: 트레이너 페이지를 한 번 클릭하세요')
     + ({ starting: ' · GD 매크로: R 누르고 시작', armed: ' · GD 매크로 대기: GD에서 첫 노트를 직접 누르세요', playing: ` · GD 매크로 재생 중 ${gdSend?.speed ?? 1}x (F9 정지) · 최대 지연 ${gdWorst.toFixed(2)}ms` + (gdSend && gdSend.speed !== 1 ? ' · ⚠ GD도 같은 배속이어야 함' : ''), done: ' · GD 매크로 끝', stopped: ' · GD 매크로 정지' }[gdMacro] ?? '');
 }
 
+// Logic (sound scheduling, misses, run end) ticks from a Worker timer, drawing from rAF.
+// rAF stops when the page is hidden or covered by GD, and page timers drop to 1/s then;
+// dedicated-worker timers keep running, so playback and sounds work behind GD.
+const ticker = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 10)'], { type: 'text/javascript' })));
+ticker.onmessage = () => { if (run) tick(performance.now()); };
 function frame(now) {
-  if (run) tick(now);
   draw(now);
   requestAnimationFrame(frame);
 }
