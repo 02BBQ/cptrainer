@@ -299,12 +299,12 @@ function gdState(v, arg) {
     stop();
     mode = 'gd'; gdWorst = 0;
     inputs = []; res = {}; lastOff = null; recent = [];
-    const { origin, list } = gdSend, last = list[list.length - 1];
-    run = { speed: 1, from: origin, to: last.t + 1, end: Infinity, guide: [], gi: 0, base: [],
+    const { origin, list, speed } = gdSend, last = list[list.length - 1];
+    run = { speed, from: origin, to: last.t + 1, end: Infinity, guide: [], gi: 0, base: [],
             startPt: origin, startReal: +arg + hOff };
   }
   if ((v === 'done' || v === 'stopped') && mode === 'gd') {
-    lastAttempt = { inputs, res, from: run.from, to: run.to, speed: 1 }; // V replays what the bot did
+    lastAttempt = { inputs, res, from: run.from, to: run.to, speed: run.speed }; // V replays what the bot did
     const p = pt(performance.now());
     setTimeout(() => { if (mode === 'gd') { stop(); cursor = p; } }, 800);
   }
@@ -319,7 +319,7 @@ function gdSent([, vk, down, t, late]) {
     botHeld = { t: pt_, d: 0, bot: true }; inputs.push(botHeld);
     let best = -1, bd = Infinity;
     notes.forEach((n, i) => { const dd = Math.abs(pt_ - n.t); if (!res[i] && dd < bd) { bd = dd; best = i; } });
-    if (best >= 0 && bd <= win()) { botHeld.note = best; res[best] = { press: lastOff = pt_ - notes[best].t }; recent.push(lastOff); }
+    if (best >= 0 && bd <= win() * run.speed) { botHeld.note = best; res[best] = { press: lastOff = (pt_ - notes[best].t) / run.speed }; recent.push(lastOff); }
   } else if (botHeld) { botHeld.d = pt_ - botHeld.t; botHeld = null; }
 }
 
@@ -331,8 +331,10 @@ async function sendToGd() {
   if (!list.length) return alert('보낼 노트가 없습니다');
   stop();
   const t0 = r ? 0 : list[0].t;
-  gdSend = { origin: t0, list };
-  const body = list.map(n => `${(n.t - t0).toFixed(3)},${n.d.toFixed(3)}`).join('\n');
+  // macro speed = 연습·재생 속도. Below 1x GD must be slowed the same amount (speedhack), or it will fail.
+  const speed = speedOf('playSpeed');
+  gdSend = { origin: t0, list, speed };
+  const body = list.map(n => `${((n.t - t0) / speed).toFixed(3)},${(n.d / speed).toFixed(3)}`).join('\n');
   try { await fetch(r ? '/macro?r=1' : '/macro', { method: 'POST', body }); } catch { alert('helper 연결 실패'); }
 }
 function stopGd() { if (helperOn && (gdMacro === 'armed' || gdMacro === 'playing')) fetch('/macro/stop', { method: 'POST' }).catch(() => {}); }
@@ -538,7 +540,7 @@ function draw(now) {
     + (sel ? ` · 구간 ${(sel.a / 1000).toFixed(2)}–${(sel.b / 1000).toFixed(2)}s` : '')
     + (mode === 'record' ? ' · Esc / F9로 종료' : '')
     + (helperOn ? ' · 전역 입력 ON' : '')
-    + ({ starting: ' · GD 매크로: R 누르고 시작', armed: ' · GD 매크로 대기: GD에서 첫 노트를 직접 누르세요', playing: ` · GD 매크로 재생 중 (F9 정지) · 최대 지연 ${gdWorst.toFixed(2)}ms`, done: ' · GD 매크로 끝', stopped: ' · GD 매크로 정지' }[gdMacro] ?? '');
+    + ({ starting: ' · GD 매크로: R 누르고 시작', armed: ' · GD 매크로 대기: GD에서 첫 노트를 직접 누르세요', playing: ` · GD 매크로 재생 중 ${gdSend?.speed ?? 1}x (F9 정지) · 최대 지연 ${gdWorst.toFixed(2)}ms` + (gdSend && gdSend.speed !== 1 ? ' · ⚠ GD도 같은 배속이어야 함' : ''), done: ' · GD 매크로 끝', stopped: ' · GD 매크로 정지' }[gdMacro] ?? '');
 }
 
 function frame(now) {
