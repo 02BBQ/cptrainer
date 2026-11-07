@@ -66,6 +66,7 @@
   </fieldset>
 </div>
 <div id="stats"></div>
+<canvas id="drift" style="height:160px; display:none" title="노트 시간(가로) vs 누름 오차(세로). 기울어진 선 = 갈수록 밀림"></canvas>
 <p class="help">
   입력: <kbd>Space</kbd> <kbd>↑</kbd> <kbd>W</kbd> (누르고 있으면 홀드, 마우스 클릭은 무시).
   하단 바: <b>드래그</b> = 구간 선택(연습 / 재녹화 대상), <b>클릭</b> = 시작 위치 이동 + 구간 해제. 레인 위 휠 = 스크롤.<br>
@@ -190,6 +191,29 @@ function stop() {
 }
 const targets = () => notes.map((n, i) => i).filter(i => notes[i].t >= run.from && notes[i].t < run.to);
 
+// drift graph: press error vs note time with a least-squares line.
+// flat line + wide scatter = random (frames / hands); sloped line = timing slowly slides (clock / GD lag).
+function drawDrift(pts) {
+  const c = $('drift');
+  if (pts.length < 4) { c.style.display = 'none'; return ''; }
+  c.style.display = 'block';
+  const [w, h] = fit(c), g = c.getContext('2d');
+  const n = pts.length, mx = pts.reduce((s, p) => s + p[0], 0) / n, my = pts.reduce((s, p) => s + p[1], 0) / n;
+  const sxx = pts.reduce((s, p) => s + (p[0] - mx) ** 2, 0);
+  const slope = sxx ? pts.reduce((s, p) => s + (p[0] - mx) * (p[1] - my), 0) / sxx : 0; // ms of error per ms of level
+  const t0 = pts[0][0], t1 = pts[n - 1][0] || t0 + 1, Y = Math.max(30, ...pts.map(p => Math.abs(p[1])));
+  const X = t => 70 + (t - t0) / (t1 - t0 || 1) * (w - 86), Yp = o => h / 2 - o / Y * (h / 2 - 12);
+  g.clearRect(0, 0, w, h);
+  g.fillStyle = '#2c2f35'; g.fillRect(70, h / 2, w - 86, 1);
+  g.fillStyle = '#8a8f98'; g.font = '11px system-ui'; g.textAlign = 'right';
+  g.fillText(`늦음 +${Y.toFixed(0)}`, 64, 16); g.fillText("0", 64, h / 2 + 4); g.fillText(`빠름 -${Y.toFixed(0)}`, 64, h - 6);
+  for (const [t, o] of pts) { g.fillStyle = colOff(o); g.fillRect(X(t) - 2, Yp(o) - 2, 4, 4); }
+  g.strokeStyle = '#fff'; g.lineWidth = 2; g.beginPath();
+  g.moveTo(X(t0), Yp(my + slope * (t0 - mx))); g.lineTo(X(t1), Yp(my + slope * (t1 - mx))); g.stroke();
+  const per10s = slope * 10000;
+  return `${per10s >= 0 ? '+' : ''}${per10s.toFixed(1)}ms/10초 (평균 ${my >= 0 ? '+' : ''}${my.toFixed(1)})`;
+}
+
 function finishAttempt() {
   if (!inputs.length) return;
   const idx = targets();
@@ -205,6 +229,8 @@ function finishAttempt() {
   const extra = inputs.length - hits.length;
   history.unshift(`${run.speed}x  히트 <b>${hits.length}/${idx.length}</b>  빈클릭 ${extra}  | 누름 ${s(hits)} | 뗌 ${s(rel)}`);
   history.length = Math.min(history.length, 8);
+  const trend = drawDrift(idx.filter(i => res[i]?.press != null).map(i => [notes[i].t, res[i].press]));
+  if (trend) history[0] += `  | 추세 ${trend}`;
   $('stats').innerHTML = history.join('\n');
 }
 
