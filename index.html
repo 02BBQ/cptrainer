@@ -21,6 +21,7 @@
   button { background:#2a2d33; color:var(--text); border:1px solid #3a3e46; border-radius:6px; padding:5px 10px; cursor:pointer; font:inherit; }
   button:hover { background:#353941; }
   button.primary { background:var(--accent); color:#111; border-color:var(--accent); font-weight:600; }
+  select { background:#0f1012; color:var(--text); border:1px solid #3a3e46; border-radius:4px; padding:3px 5px; font:inherit; }
   input[type=number] { width:64px; background:#0f1012; color:var(--text); border:1px solid #3a3e46; border-radius:4px; padding:3px 5px; font:inherit; }
   #stats { padding:0 16px 8px; font-family:ui-monospace, monospace; white-space:pre-wrap; color:var(--dim); }
   #stats b { color:var(--text); }
@@ -57,6 +58,7 @@
     <button id="btnStop">정지 <kbd>Esc</kbd></button>
   </fieldset>
   <fieldset><legend>설정</legend>
+    보기 <select id="view"><option value="gd">GD (가로)</option><option value="rhythm">리듬게임 (세로)</option></select>
     줌 <input id="zoom" type="range" min="0.05" max="1.5" step="0.01" value="0.35">
     판정창 ± <input id="win" type="number" value="120" min="10" max="500">ms
     <label title="GD에서 R(재시작) 누른 순간 = 0초. 녹화·연습·GD 매크로 기준 통일"><input type="checkbox" id="rsync" checked> R 리스폰 동기화</label>
@@ -90,6 +92,8 @@ let mode = 'idle';   // idle | record | rerecord | practice | replay
 let run = null;
 let inputs = [], res = {}, held = null, lastOff = null;
 let lastAttempt = null, history = [], recent = [];
+let judge = null; // { off: ms | null (miss), at } latest judgement, drawn as PERFECT/GREAT/… in the rhythm view
+const setJudge = off => { judge = { off, at: performance.now() }; };
 
 function load() {
   try {
@@ -265,6 +269,7 @@ function press(time) {
     if (best >= 0 && bd <= W) {
       held.note = best;
       lastOff = (t - notes[best].t) / run.speed;
+      setJudge(lastOff);
       recent.push(lastOff);
       res[best] = { press: lastOff };
     }
@@ -349,7 +354,7 @@ function gdSent([, vk, down, t, late]) {
     botHeld = { t: pt_, d: 0, bot: true }; inputs.push(botHeld);
     let best = -1, bd = Infinity;
     notes.forEach((n, i) => { const dd = Math.abs(pt_ - n.t); if (!res[i] && dd < bd) { bd = dd; best = i; } });
-    if (best >= 0 && bd <= win() * run.speed) { botHeld.note = best; res[best] = { press: lastOff = (pt_ - notes[best].t) / run.speed }; recent.push(lastOff); }
+    if (best >= 0 && bd <= win() * run.speed) { botHeld.note = best; res[best] = { press: lastOff = (pt_ - notes[best].t) / run.speed }; recent.push(lastOff); setJudge(lastOff); }
   } else if (botHeld) { botHeld.d = pt_ - botHeld.t; botHeld = null; }
 }
 
@@ -444,7 +449,7 @@ function tick(now) {
   }
   if (mode === 'practice' || mode === 'gd') {
     const W = win() * run.speed;
-    for (const i of targets()) if (!res[i] && p > notes[i].t + W) res[i] = { miss: true };
+    for (const i of targets()) if (!res[i] && p > notes[i].t + W) { res[i] = { miss: true }; setJudge(null); }
   }
   if (mode === 'rerecord' && p >= run.to) return stop();
   if (mode !== 'record' && p >= run.end) {
@@ -463,9 +468,95 @@ const fmt = o => (o >= 0 ? '+' : '') + o.toFixed(1);
 
 function fit(c) {
   const r = devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
-  if (c.width !== Math.round(w * r)) { c.width = Math.round(w * r); c.height = Math.round(h * r); }
+  if (c.width !== Math.round(w * r) || c.height !== Math.round(h * r)) { c.width = Math.round(w * r); c.height = Math.round(h * r); }
   c.getContext('2d').setTransform(r, 0, 0, r, 0, 0);
   return [w, h];
+}
+
+function drawMeter(hx, my) {
+  const half = 130, scale = half / win();
+  for (let x = -half; x < half; x += 2) { lc.fillStyle = colOff(x / scale); lc.globalAlpha = 0.25; lc.fillRect(hx + x, my, 2, 6); }
+  recent.slice(-20).forEach((o, k, a) => {
+    lc.globalAlpha = 0.3 + 0.7 * (k + 1) / a.length;
+    lc.fillStyle = colOff(o); lc.fillRect(hx + Math.max(-half, Math.min(half, o * scale)) - 1.5, my - 8, 3, 22);
+  });
+  lc.globalAlpha = 1; lc.fillStyle = '#fff'; lc.fillRect(hx - 1, my - 10, 2, 26);
+  lc.font = '11px system-ui'; lc.fillStyle = '#8a8f98';
+  lc.textAlign = 'right'; lc.fillText('빠름', hx - half - 6, my + 7);
+  lc.textAlign = 'left'; lc.fillText('늦음', hx + half + 6, my + 7);
+}
+
+// status line under the lane / centre of the rhythm lane: countdown, waits, GD macro target window
+function runMessage(p) {
+  if (mode === 'gd') {
+    const ok = /geometry ?dash/i.test(gdFg);
+    return [ok ? `키 → ${gdFg}` : `⚠ 키가 GD가 아닌 "${gdFg || '알 수 없음'}" 창으로 가는 중`, ok ? '#4cd59a' : '#eb5757', 15];
+  }
+  if (run?.waitR) return ['R 대기 — GD에서 R을 눌러 재시작하면 시작', '#f2c94c', 16];
+  if (run?.wait) return ['첫 클릭 대기 — 첫 노트 타이밍에 누르세요', '#f2c94c', 16];
+  if (run && p < run.from) return [Math.ceil((run.from - p) / run.speed / 500) + '', '#f2c94c', 28];
+  return null;
+}
+
+const TIERS = [[8, 'PERFECT', '#7df9ff'], [20, 'GREAT', '#4cd59a'], [45, 'GOOD', '#f2c94c'], [Infinity, 'BAD', '#f2994a']];
+
+// rhythm-game view: one key lane, notes fall onto a judgement line, holds are long bars
+function drawRhythm(now, p, z, R, live) {
+  const [w, h] = fit(lane);
+  const lw = Math.min(200, w * 0.45), lx = (w - lw) / 2, jy = h - 120, zz = z * 1.6;
+  const Y = t => jy - (t - p) * zz;
+  lc.clearRect(0, 0, w, h);
+  lc.fillStyle = '#101114'; lc.fillRect(lx, 0, lw, h);
+  lc.fillStyle = '#2c2f35'; lc.fillRect(lx - 2, 0, 2, h); lc.fillRect(lx + lw, 0, 2, h);
+
+  // key glow while the button is down (you, the in-app bot, or the GD bot)
+  const down = held || botHeld || (mode === 'auto' && notes.some(n => p >= n.t && p < n.t + Math.max(n.d, 40)));
+  if (down) {
+    const g = lc.createLinearGradient(0, jy - 160, 0, jy);
+    g.addColorStop(0, 'rgba(125,249,255,0)'); g.addColorStop(1, 'rgba(125,249,255,0.25)');
+    lc.fillStyle = g; lc.fillRect(lx, jy - 160, lw, 160);
+  }
+
+  const tTop = p + jy / zz, tBot = p - (h - jy) / zz;
+  notes.forEach((n, i) => {
+    const d = live(n), r = mode === 'auto' ? (p >= n.t ? {} : null) : R[i];
+    if (n.t > tTop || n.t + d < tBot) return;
+    const hit = r && !r.miss, holding = hit && (held?.note === i || botHeld?.note === i || mode === 'auto') && p < n.t + d;
+    if (hit && p >= n.t && !holding) return; // cleared notes vanish like in a rhythm game
+    const col = r?.miss ? '#555' : colLen(Math.max(d, 1));
+    if (d >= HOLD) { // hold body, shrinks into the line while held
+      const yTop = Y(n.t + d), yBot = holding ? jy : Y(n.t);
+      lc.globalAlpha = r?.miss ? 0.35 : 0.6; lc.fillStyle = col;
+      lc.fillRect(lx + lw * 0.2, yTop, lw * 0.6, yBot - yTop);
+      lc.globalAlpha = 1; lc.fillRect(lx + lw * 0.2, yTop - 3, lw * 0.6, 6);
+    }
+    if (!holding) { lc.fillStyle = col; lc.fillRect(lx + 6, Y(n.t) - 9, lw - 12, 18); lc.fillStyle = 'rgba(255,255,255,0.5)'; lc.fillRect(lx + 6, Y(n.t) - 9, lw - 12, 3); }
+  });
+
+  // judgement line
+  lc.fillStyle = down ? '#7df9ff' : '#fff'; lc.fillRect(lx - 10, jy - 2, lw + 20, 4);
+
+  // combo: hits since the last miss, in note order
+  let combo = 0;
+  if (run && (mode === 'practice' || mode === 'gd')) for (const i of targets()) { if (!res[i]) break; combo = res[i].miss ? 0 : combo + 1; }
+  lc.textAlign = 'center';
+  if (combo > 1) { lc.fillStyle = '#e6e6e6'; lc.font = '800 44px system-ui'; lc.fillText(combo, w / 2, h * 0.28); lc.font = '600 13px system-ui'; lc.fillStyle = '#8a8f98'; lc.fillText('COMBO', w / 2, h * 0.28 + 20); }
+
+  // latest judgement: pops then fades over 500ms
+  if (judge && (mode === 'practice' || mode === 'gd')) {
+    const age = (now - judge.at) / 500;
+    if (age < 1) {
+      const [, text, c] = judge.off == null ? [0, 'MISS', '#eb5757'] : TIERS.find(t => Math.abs(judge.off) <= t[0]);
+      lc.globalAlpha = 1 - age; lc.fillStyle = c;
+      lc.font = `900 ${Math.round(38 * (1 + 0.25 * Math.max(0, 0.2 - age) / 0.2))}px system-ui`;
+      lc.fillText(text, w / 2, jy - 70);
+      if (judge.off != null) { lc.font = '700 15px ui-monospace, monospace'; lc.fillText(`${fmt(judge.off)} ms ${Math.abs(judge.off) < 3 ? '' : judge.off < 0 ? '빠름' : '늦음'}`, w / 2, jy - 44); }
+      lc.globalAlpha = 1;
+    }
+  }
+  if (mode === 'practice' || recent.length) drawMeter(w / 2, jy + 60);
+  const msg = runMessage(p);
+  if (msg) { lc.textAlign = 'center'; lc.fillStyle = msg[1]; lc.font = `700 ${msg[2]}px system-ui`; lc.fillText(msg[0], w / 2, h * 0.45); }
 }
 
 function draw(now) {
@@ -475,6 +566,7 @@ function draw(now) {
   const I = mode === 'replay' ? lastAttempt.inputs : mode === 'practice' || mode === 'gd' ? inputs : mode === 'auto' ? notes.filter(n => n.t <= p) : [];
   const live = x => x === held ? Math.max(0, p - x.t) : x.d;
 
+  if ($('view').value === 'rhythm') drawRhythm(now, p, z, R, live); else {
   // lane
   const [w, h] = fit(lane);
   const hx = Math.min(w * 0.3, 360), ly = 70, lh = 110;
@@ -529,32 +621,10 @@ function draw(now) {
     lc.fillText(fmt(lastOff) + ' ms ' + (Math.abs(lastOff) < 3 ? '' : lastOff < 0 ? '빠름' : '늦음'), hx + 8, ly - 30);
   }
   // hit-error meter: left = early, right = late, colour = how far off; latest hit brightest
-  if (mode === 'practice' || recent.length) {
-    const my = ly + lh + 92, half = 130, scale = half / win();
-    for (let x = -half; x < half; x += 2) { lc.fillStyle = colOff(x / scale); lc.globalAlpha = 0.25; lc.fillRect(hx + x, my, 2, 6); }
-    recent.slice(-20).forEach((o, k, a) => {
-      lc.globalAlpha = 0.3 + 0.7 * (k + 1) / a.length;
-      lc.fillStyle = colOff(o); lc.fillRect(hx + Math.max(-half, Math.min(half, o * scale)) - 1.5, my - 8, 3, 22);
-    });
-    lc.globalAlpha = 1; lc.fillStyle = '#fff'; lc.fillRect(hx - 1, my - 10, 2, 26);
-    lc.font = '11px system-ui'; lc.fillStyle = '#8a8f98';
-    lc.textAlign = 'right'; lc.fillText('빠름', hx - half - 6, my + 7);
-    lc.textAlign = 'left'; lc.fillText('늦음', hx + half + 6, my + 7);
-  }
-  if (mode === 'gd') {
-    const ok = /geometry ?dash/i.test(gdFg);
-    lc.font = '700 15px system-ui'; lc.fillStyle = ok ? '#4cd59a' : '#eb5757';
-    lc.fillText(ok ? `키 → ${gdFg}` : `⚠ 키가 GD가 아닌 "${gdFg || '알 수 없음'}" 창으로 가는 중`, hx + 12, ly + lh + 64);
-    if (inputs.some(x => x.user)) { lc.fillStyle = '#eb5757'; lc.fillText('⚠ 재생 중에 직접 누른 입력 있음 (빨간 바) — 봇 입력과 겹침', hx + 12, ly + lh + 84); }
-  } else if (run?.waitR) {
-    lc.fillStyle = '#f2c94c'; lc.font = '700 16px system-ui';
-    lc.fillText('R 대기 — GD에서 R을 눌러 재시작하면 시작', hx + 12, ly + lh + 64);
-  } else if (run?.wait) {
-    lc.fillStyle = '#f2c94c'; lc.font = '700 16px system-ui';
-    lc.fillText('첫 클릭 대기 — 첫 노트 타이밍에 누르세요', hx + 12, ly + lh + 64);
-  } else if (run && p < run.from) {
-    lc.fillStyle = '#f2c94c'; lc.font = '700 28px system-ui';
-    lc.fillText(Math.ceil((run.from - p) / run.speed / 500) + '', hx + 12, ly + lh + 64);
+  if (mode === 'practice' || recent.length) drawMeter(hx, ly + lh + 92);
+  const msg = runMessage(p);
+  if (msg) { lc.textAlign = 'left'; lc.fillStyle = msg[1]; lc.font = `700 ${msg[2]}px system-ui`; lc.fillText(msg[0], hx + 12, ly + lh + 64); }
+  if (mode === 'gd' && inputs.some(x => x.user)) { lc.font = '700 15px system-ui'; lc.fillStyle = '#eb5757'; lc.fillText('⚠ 재생 중에 직접 누른 입력 있음 (빨간 바) — 봇 입력과 겹침', hx + 12, ly + lh + 84); }
   }
 
   // overview
@@ -579,6 +649,15 @@ function draw(now) {
 // dedicated-worker timers keep running, so playback and sounds work behind GD.
 const ticker = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 10)'], { type: 'text/javascript' })));
 ticker.onmessage = () => { if (run) tick(performance.now()); };
+
+// view switch: rhythm lane needs a taller canvas; remembered per browser
+function applyView() {
+  lane.style.height = $('view').value === 'rhythm' ? '560px' : '';
+  try { localStorage.setItem('gdpt-view', $('view').value); } catch {}
+}
+try { $('view').value = localStorage.getItem('gdpt-view') || 'gd'; } catch {}
+$('view').addEventListener('change', e => { e.target.blur(); applyView(); });
+applyView();
 function frame(now) {
   draw(now);
   requestAnimationFrame(frame);
