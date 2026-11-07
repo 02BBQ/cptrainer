@@ -182,10 +182,11 @@ class Helper {
                 } else if (path == "/") {
                     byte[] b = File.ReadAllBytes(page); // re-read each time so edits show on refresh
                     r.ContentType = "text/html; charset=utf-8";
-                    r.OutputStream.Write(b, 0, b.Length);
+                    r.ContentLength64 = b.Length; // explicit length: HTTP/1.0 clients can't take chunked
+                    if (ctx.Request.HttpMethod != "HEAD") r.OutputStream.Write(b, 0, b.Length); // HEAD probes get headers only
                     r.Close();
                 } else { r.StatusCode = 404; r.Close(); }
-            } catch (Exception e) { Console.WriteLine("request failed: " + e.Message); }
+            } catch (Exception e) { Console.WriteLine("request failed (" + ctx.Request.HttpMethod + " " + ctx.Request.RawUrl + "): " + e.Message); }
         }
     }
 
