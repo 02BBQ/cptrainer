@@ -500,58 +500,63 @@ function runMessage(p) {
 
 const TIERS = [[8, 'PERFECT', '#7df9ff'], [20, 'GREAT', '#4cd59a'], [45, 'GOOD', '#f2c94c'], [Infinity, 'BAD', '#f2994a']];
 
-// rhythm-game view: one key lane, notes fall onto a judgement line, holds are long bars.
-// Readability: wide lane, time grid, solid note heads with outlines, gap labels beside the lane,
-// judgement / combo in the side panels so they never cover notes, key box under the line.
+// rhythm-game view: notes fall down a lit lane onto a receptor diamond.
+// tap = outlined diamond, hold = black capsule with a diamond at each end, judgement / combo in side panels.
 function rrect(x, y, w, h, r) { lc.beginPath(); lc.roundRect(x, y, w, h, r); }
+function diamond(x, y, r) { lc.beginPath(); lc.moveTo(x, y - r); lc.lineTo(x + r, y); lc.lineTo(x, y + r); lc.lineTo(x - r, y); lc.closePath(); }
+// outlined diamond: black rim, coloured core
+function gem(x, y, r, core) {
+  diamond(x, y, r); lc.fillStyle = '#0b0b0d'; lc.fill();
+  diamond(x, y, r * 0.55); lc.fillStyle = core; lc.fill();
+}
+// hold capsule: pointed top and bottom, flat sides
+function capsule(x, yTop, yBot, r) {
+  lc.beginPath();
+  lc.moveTo(x, yTop - r); lc.lineTo(x + r, yTop); lc.lineTo(x + r, yBot); lc.lineTo(x, yBot + r);
+  lc.lineTo(x - r, yBot); lc.lineTo(x - r, yTop); lc.closePath();
+}
 function drawRhythm(now, p, z, R, live) {
   const [w, h] = fit(lane);
-  const lw = Math.min(280, w * 0.5), lx = (w - lw) / 2, jy = h - 130, zz = z * 1.6;
-  const side = lx, wide = side > 150; // room for side panels?
+  const lw = Math.min(240, w * 0.42), lx = (w - lw) / 2, cx = w / 2, jy = h - 120, zz = z * 1.6, G = 22;
+  const side = lx, wide = side > 150;
   const Y = t => jy - (t - p) * zz;
   lc.clearRect(0, 0, w, h);
-  lc.fillStyle = '#16181c'; lc.fillRect(lx, 0, lw, jy + 2);
-  lc.fillStyle = '#3a3e46'; lc.fillRect(lx - 2, 0, 2, jy); lc.fillRect(lx + lw, 0, 2, jy);
-
-  // time grid: faint line every 100ms, stronger + label every 500ms (time until it reaches the line)
-  lc.font = '11px ui-monospace, monospace'; lc.textAlign = 'right';
-  for (let k = Math.ceil((p - 200) / 100) * 100; Y(k) > 0; k += 100) {
-    const y = Y(k); if (y > jy) continue;
-    const major = Math.round(k) % 500 === 0;
-    lc.fillStyle = major ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.035)';
-    lc.fillRect(lx, y, lw, 1);
-    if (major && y < jy - 14) { lc.fillStyle = '#5c616b'; lc.fillText(`${((k - p) / 1000).toFixed(1)}s`, lx - 8, y + 4); }
-  }
 
   const down = held || botHeld || (mode === 'auto' && notes.some(n => p >= n.t && p < n.t + Math.max(n.d, 40)));
-  if (down) {
-    const g = lc.createLinearGradient(0, jy - 200, 0, jy);
-    g.addColorStop(0, 'rgba(125,249,255,0)'); g.addColorStop(1, 'rgba(125,249,255,0.22)');
-    lc.fillStyle = g; lc.fillRect(lx, jy - 200, lw, 200);
+  // lane: warm light rising toward the line, white glow just above it, white edges, thin centre rail
+  const bg = lc.createLinearGradient(0, 0, 0, jy);
+  bg.addColorStop(0, 'rgba(240,168,104,0.05)'); bg.addColorStop(0.75, 'rgba(240,168,104,0.22)'); bg.addColorStop(1, 'rgba(255,236,214,0.45)');
+  lc.fillStyle = bg; lc.fillRect(lx, 0, lw, jy);
+  if (down) { const g = lc.createLinearGradient(0, jy - 220, 0, jy); g.addColorStop(0, 'rgba(125,249,255,0)'); g.addColorStop(1, 'rgba(125,249,255,0.30)'); lc.fillStyle = g; lc.fillRect(lx, jy - 220, lw, 220); }
+  lc.fillStyle = 'rgba(0,0,0,0.35)'; lc.fillRect(lx, jy, lw, h - jy); // below the line: darker
+  lc.fillStyle = 'rgba(255,255,255,0.85)'; lc.fillRect(lx - 1, 0, 2, h); lc.fillRect(lx + lw - 1, 0, 2, h);
+  lc.fillStyle = 'rgba(20,20,24,0.6)'; lc.fillRect(cx - 1, 0, 2, h);
+
+  // 0.5s ticks on the left edge (time until the line)
+  lc.font = '11px ui-monospace, monospace'; lc.textAlign = 'right';
+  for (let k = Math.ceil(p / 500) * 500; Y(k) > 0; k += 500) {
+    const y = Y(k); if (y > jy - 14) continue;
+    lc.fillStyle = 'rgba(255,255,255,0.5)'; lc.fillRect(lx - 7, y, 6, 1);
+    lc.fillStyle = '#5c616b'; lc.fillText(`${((k - p) / 1000).toFixed(1)}s`, lx - 10, y + 4);
   }
 
-  const tTop = p + jy / zz, tBot = p - (h - jy) / zz, HEAD = 22;
-  lc.save(); lc.beginPath(); lc.rect(0, 0, w, jy + HEAD / 2); lc.clip(); // notes never draw over the key box
+  const tTop = p + (jy + G) / zz, tBot = p - (h - jy) / zz;
   notes.forEach((n, i) => {
     const d = live(n), r = mode === 'auto' ? (p >= n.t ? {} : null) : R[i];
     if (n.t > tTop || n.t + d < tBot) return;
     const hit = r && !r.miss, holding = hit && (held?.note === i || botHeld?.note === i || mode === 'auto') && p < n.t + d;
     if (hit && p >= n.t && !holding) return; // cleared notes vanish
-    const col = r?.miss ? '#4a4d55' : colLen(Math.max(d, 1)), yh = holding ? jy : Y(n.t);
-    if (d >= HOLD) { // hold: translucent body with solid edges, white release cap
-      const yt = Y(n.t + d), bx = lx + lw * 0.25, bw = lw * 0.5;
-      lc.globalAlpha = r?.miss ? 0.3 : 0.45; lc.fillStyle = col; lc.fillRect(bx, yt, bw, yh - yt);
-      lc.globalAlpha = 1; lc.fillRect(bx, yt, 3, yh - yt); lc.fillRect(bx + bw - 3, yt, 3, yh - yt);
-      lc.fillStyle = r?.miss ? '#666' : '#f4f4f4'; rrect(lx + 14, yt - 4, lw - 28, 8, 4); lc.fill();
-      if (yh - yt > 34) { lc.fillStyle = '#e6e6e6'; lc.font = '700 13px ui-monospace, monospace'; lc.textAlign = 'center'; lc.fillText(Math.round(d) + 'ms', lx + lw / 2, (yt + yh) / 2 + 5); }
-    }
-    if (!holding) { // head: solid, outlined, highlight on top edge
-      rrect(lx + 6, yh - HEAD / 2, lw - 12, HEAD, 6);
-      lc.fillStyle = col; lc.fill();
-      lc.lineWidth = 2; lc.strokeStyle = 'rgba(0,0,0,0.55)'; lc.stroke();
-      lc.fillStyle = 'rgba(255,255,255,0.55)'; lc.fillRect(lx + 12, yh - HEAD / 2 + 3, lw - 24, 3);
-    }
-    // gap since the previous press, beside the lane: the rhythm you have to read
+    const core = r?.miss ? '#6b6e76' : colLen(Math.max(d, 1)), yh = holding ? jy : Y(n.t);
+    lc.globalAlpha = r?.miss ? 0.45 : 1;
+    if (d >= HOLD) {
+      const yt = Y(n.t + d);
+      capsule(cx, yt, yh, G * 0.8); lc.fillStyle = '#0b0b0d'; lc.fill();
+      diamond(cx, yt, G * 0.45); lc.fillStyle = core; lc.fill();           // release end
+      if (!holding) { diamond(cx, yh, G * 0.45); lc.fillStyle = core; lc.fill(); } // press end
+      if (yh - yt > 60) { lc.fillStyle = '#c9ccd2'; lc.font = '700 12px ui-monospace, monospace'; lc.textAlign = 'center'; lc.fillText(Math.round(d) + 'ms', cx, (yt + yh) / 2 + 4); }
+    } else if (!holding) gem(cx, yh, G, core);
+    lc.globalAlpha = 1;
+    // gap since the previous press, beside the lane
     if (!holding && yh < jy - 4) {
       const gap = i > 0 ? n.t - notes[i - 1].t : null;
       lc.textAlign = 'left'; lc.font = '600 12px ui-monospace, monospace';
@@ -559,26 +564,25 @@ function drawRhythm(now, p, z, R, live) {
       lc.fillText(r?.miss ? 'MISS' : gap != null ? `+${Math.round(gap)}` : 'start', lx + lw + 10, yh + 4);
     }
   });
+
+  // judgement line with the receptor diamond; lights up while pressed, flashes on a hit
+  lc.fillStyle = '#fff'; lc.fillRect(lx, jy - 1, lw, 2);
+  const flash = judge && judge.off != null && now - judge.at < 150;
+  lc.save();
+  if (down || flash) { lc.shadowColor = '#7df9ff'; lc.shadowBlur = 22; }
+  diamond(cx, jy, 16); lc.fillStyle = down || flash ? '#7df9ff' : '#0b0b0d'; lc.fill();
+  lc.lineWidth = 2; lc.strokeStyle = 'rgba(255,255,255,0.8)'; lc.stroke();
   lc.restore();
 
-  // judgement line + key box
-  lc.save(); lc.shadowColor = down ? '#7df9ff' : 'rgba(255,255,255,0.6)'; lc.shadowBlur = down ? 18 : 8;
-  lc.fillStyle = down ? '#7df9ff' : '#fff'; lc.fillRect(lx - 12, jy - 3, lw + 24, 6); lc.restore();
-  rrect(lx + 6, jy + 16, lw - 12, 34, 8);
-  lc.fillStyle = down ? '#7df9ff' : '#1f2227'; lc.fill();
-  lc.strokeStyle = down ? '#7df9ff' : '#3a3e46'; lc.lineWidth = 2; lc.stroke();
-  lc.fillStyle = down ? '#111' : '#8a8f98'; lc.font = '700 13px system-ui'; lc.textAlign = 'center';
-  lc.fillText('SPACE · ↑ · W', lx + lw / 2, jy + 38);
-
-  // combo + latest judgement: in side panels when there is room, otherwise high above the line
+  // combo + latest judgement in side panels (or above the lane when narrow)
   let combo = 0;
   if (run && (mode === 'practice' || mode === 'gd')) for (const i of targets()) { if (!res[i]) break; combo = res[i].miss ? 0 : combo + 1; }
-  const jx = wide ? lx / 2 : w / 2, jyText = wide ? jy - 60 : h * 0.22;
-  const cx = wide ? lx + lw + side / 2 : w / 2, cy = wide ? jy - 70 : h * 0.12;
+  const jx = wide ? lx / 2 : cx, jyText = wide ? jy - 60 : h * 0.22;
+  const kx = wide ? lx + lw + side / 2 : cx, ky = wide ? jy - 70 : h * 0.12;
   lc.textAlign = 'center';
   if (combo > 1) {
-    lc.fillStyle = '#e6e6e6'; lc.font = '800 46px system-ui'; lc.fillText(combo, cx, cy);
-    lc.font = '700 12px system-ui'; lc.fillStyle = '#8a8f98'; lc.fillText('COMBO', cx, cy + 20);
+    lc.fillStyle = '#e6e6e6'; lc.font = '800 46px system-ui'; lc.fillText(combo, kx, ky);
+    lc.font = '700 12px system-ui'; lc.fillStyle = '#8a8f98'; lc.fillText('COMBO', kx, ky + 20);
   }
   if (judge && (mode === 'practice' || mode === 'gd')) {
     const age = (now - judge.at) / 600;
@@ -588,20 +592,19 @@ function drawRhythm(now, p, z, R, live) {
       lc.font = `900 ${Math.round(34 * (1 + 0.25 * Math.max(0, 0.15 - age) / 0.15))}px system-ui`;
       lc.fillText(text, jx, jyText);
       if (judge.off != null) {
-        lc.font = '700 16px ui-monospace, monospace';
-        lc.fillText(`${fmt(judge.off)} ms`, jx, jyText + 26);
+        lc.font = '700 16px ui-monospace, monospace'; lc.fillText(`${fmt(judge.off)} ms`, jx, jyText + 26);
         if (Math.abs(judge.off) >= 3) { lc.font = '700 13px system-ui'; lc.fillText(judge.off < 0 ? '빠름' : '늦음', jx, jyText + 46); }
       }
       lc.globalAlpha = 1;
     }
   }
-  if (mode === 'practice' || recent.length) drawMeter(w / 2, jy + 92);
+  if (mode === 'practice' || recent.length) drawMeter(cx, jy + 80);
   const msg = runMessage(p);
   if (msg) {
     lc.textAlign = 'center'; lc.font = `700 ${msg[2]}px system-ui`;
     const tw = lc.measureText(msg[0]).width;
-    lc.fillStyle = 'rgba(11,12,14,0.85)'; rrect(w / 2 - tw / 2 - 14, h * 0.42 - msg[2], tw + 28, msg[2] + 18, 8); lc.fill();
-    lc.fillStyle = msg[1]; lc.fillText(msg[0], w / 2, h * 0.42);
+    lc.fillStyle = 'rgba(11,12,14,0.85)'; rrect(cx - tw / 2 - 14, h * 0.42 - msg[2], tw + 28, msg[2] + 18, 8); lc.fill();
+    lc.fillStyle = msg[1]; lc.fillText(msg[0], cx, h * 0.42);
   }
 }
 
