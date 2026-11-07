@@ -47,6 +47,7 @@
     속도 <input id="playSpeed" type="number" value="1" step="0.05" min="0.05" max="4">x
     <label><input type="checkbox" id="loop" checked> 반복</label>
     <label><input type="checkbox" id="guide" checked> 가이드 소리</label>
+    <label title="첫 클릭 순간을 첫 노트로 맞춤 (GD와 같이 칠 때)"><input type="checkbox" id="sync" checked> 첫 클릭 동기화</label>
     <button id="btnPlay" class="primary">연습 <kbd>P</kbd></button>
     <button id="btnReplay">리플레이 <kbd>V</kbd></button>
     <button id="btnAuto">매크로 재생 <kbd>A</kbd></button>
@@ -142,13 +143,15 @@ function start(kind) {
   let end = to;
   for (const n of notes) if (n.t >= from && n.t < to) end = Math.max(end, n.t + n.d);
   mode = kind;
-  run = { speed, from, to, end: end + 300 * speed, guide, gi: 0 };
+  const first = notes.find(n => n.t >= from && n.t < to)?.t;
+  run = { speed, from, to, end: end + 300 * speed, guide, gi: 0, first };
   reset(performance.now());
 }
 function reset(now) {
   run.startReal = now + LEAD;
   run.startPt = run.from;
   run.gi = 0;
+  run.wait = mode === 'practice' && $('sync').checked && run.first != null;
   if (mode === 'practice') { inputs = []; res = {}; lastOff = null; }
 }
 function stop() {
@@ -189,6 +192,10 @@ function finishAttempt() {
 // ---------- input ----------
 function press(time) {
   if (held || !run || mode === 'replay' || mode === 'auto') return;
+  if (run.wait) { // first-click sync: your first click defines where the first note is
+    run.wait = false;
+    run.startReal = time - (run.first - run.startPt) / run.speed;
+  }
   const t = pt(time);
   if (mode === 'record' || mode === 'rerecord') {
     if (t < run.from || t >= run.to) return;
@@ -220,23 +227,48 @@ function release(time) {
   }
 }
 
+// all GD jump inputs act as one button (single player): pressed while any is down
 const KEYS = new Set(['Space', 'ArrowUp', 'KeyW']);
+const downKeys = new Set();
+function jump(id, isDown, time) {
+  if (isDown) { if (!downKeys.has(id)) { downKeys.add(id); if (downKeys.size === 1) press(time); } }
+  else if (downKeys.delete(id) && downKeys.size === 0) release(time);
+}
 addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' && e.target.type !== 'checkbox' && e.target.type !== 'range') return;
-  if (KEYS.has(e.code)) { e.preventDefault(); if (!e.repeat) press(e.timeStamp); return; }
+  if (KEYS.has(e.code)) { e.preventDefault(); jump(e.code, true, e.timeStamp); return; }
   if (e.repeat) return;
   const act = { KeyR: () => start('record'), KeyT: () => start('rerecord'), KeyP: () => start('practice'), KeyV: () => start('replay'), KeyA: () => start('auto'), Escape: stop }[e.code];
   if (act) { e.preventDefault(); act(); }
 });
-addEventListener('keyup', e => { if (KEYS.has(e.code)) { e.preventDefault(); release(e.timeStamp); } });
-lane.addEventListener('pointerdown', e => { lane.setPointerCapture(e.pointerId); press(e.timeStamp); });
-lane.addEventListener('pointerup', e => release(e.timeStamp));
+addEventListener('keyup', e => { if (KEYS.has(e.code)) { e.preventDefault(); jump(e.code, false, e.timeStamp); } });
+lane.addEventListener('pointerdown', e => { lane.setPointerCapture(e.pointerId); jump('mouse', true, e.timeStamp); });
+lane.addEventListener('pointerup', e => jump('mouse', false, e.timeStamp));
+
+// global input from gdpt-helper.exe, used only while this page is NOT focused (e.g. playing GD)
+let helperOn = false, hOff = Infinity;
+try {
+  const es = new EventSource('/events');
+  es.onopen = () => { helperOn = true; };
+  es.onerror = () => { helperOn = false; if (hOff === Infinity) es.close(); }; // no helper here: stop retrying
+  es.onmessage = e => {
+    const [k, v] = e.data.split(',');
+    if (k !== 'k') {
+      // ponytail: min-latency offset between helper clock and performance.now, fine unless clocks drift over hours
+      hOff = Math.min(hOff, performance.now() - +v);
+    }
+    if (k === 'p' || document.hasFocus()) return;
+    if (k === 'd') jump('helper', true, +v + hOff);
+    else if (k === 'u') jump('helper', false, +v + hOff);
+    else if (k === 'k') v === 'stop' ? stop() : start(v);
+  };
+} catch {}
 lane.addEventListener('wheel', e => {
   if (run) return;
   e.preventDefault();
   cursor = Math.min(viewLen(), Math.max(0, cursor + e.deltaY / +$('zoom').value * 0.5));
 }, { passive: false });
-addEventListener('blur', () => release(performance.now()));
+addEventListener('blur', () => { downKeys.clear(); release(performance.now()); });
 
 // overview: drag = select range, click = move cursor
 let drag = null;
@@ -278,6 +310,10 @@ $('file').addEventListener('change', async e => {
 
 // ---------- loop ----------
 function tick(now) {
+  if (run.wait) { // hold the view just before the first note until the first click
+    run.startReal = now - (run.first - 300 * run.speed - run.startPt) / run.speed;
+    return;
+  }
   const p = pt(now);
   // schedule guide beeps slightly ahead on the audio clock (no frame jitter)
   const ahead = p + 150 * run.speed, g = run.guide;
@@ -358,7 +394,10 @@ function draw(now) {
   lc.fillStyle = '#fff'; lc.fillRect(hx - 1, ly - 30, 2, lh + 50);
   lc.textAlign = 'left'; lc.font = '600 13px ui-monospace, monospace';
   if (lastOff != null && mode === 'practice') { lc.fillStyle = colOff(lastOff); lc.fillText(fmt(lastOff) + ' ms', hx + 8, ly - 32); }
-  if (run && p < run.from) {
+  if (run?.wait) {
+    lc.fillStyle = '#f2c94c'; lc.font = '700 16px system-ui';
+    lc.fillText('첫 클릭 대기 — 첫 노트 타이밍에 누르세요', hx + 12, ly + lh + 60);
+  } else if (run && p < run.from) {
     lc.fillStyle = '#f2c94c'; lc.font = '700 28px system-ui';
     lc.fillText(Math.ceil((run.from - p) / run.speed / 500) + '', hx + 12, ly + lh + 60);
   }
@@ -375,7 +414,8 @@ function draw(now) {
   const names = { idle: '대기', record: '녹화 중', rerecord: '구간 재녹화', practice: '연습', replay: '리플레이', auto: '매크로 재생' };
   $('status').textContent = `${names[mode]}${run ? ' ' + run.speed + 'x' : ''} · ${(p / 1000).toFixed(2)}s · 노트 ${notes.length}개`
     + (sel ? ` · 구간 ${(sel.a / 1000).toFixed(2)}–${(sel.b / 1000).toFixed(2)}s` : '')
-    + (mode === 'record' ? ' · Esc로 종료' : '');
+    + (mode === 'record' ? ' · Esc / F9로 종료' : '')
+    + (helperOn ? ' · 전역 입력 ON' : '');
 }
 
 function frame(now) {
