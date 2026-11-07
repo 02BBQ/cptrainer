@@ -53,6 +53,7 @@
     <button id="btnPlay" class="primary">연습 <kbd>P</kbd></button>
     <button id="btnReplay">리플레이 <kbd>V</kbd></button>
     <button id="btnAuto">매크로 재생 <kbd>A</kbd></button>
+    <button id="btnGd" title="helper가 GD에 Space를 대신 누름. 첫 노트는 직접 누르면 나머지를 이어서 침">GD로 매크로 <kbd>G</kbd> <kbd>F11</kbd></button>
     <button id="btnStop">정지 <kbd>Esc</kbd></button>
   </fieldset>
   <fieldset><legend>설정</legend>
@@ -243,7 +244,7 @@ addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' && e.target.type !== 'checkbox' && e.target.type !== 'range') return;
   if (KEYS.has(e.code)) { e.preventDefault(); jump(e.code, true, e.timeStamp); return; }
   if (e.repeat) return;
-  const act = { KeyR: () => start('record'), KeyT: () => start('rerecord'), KeyP: () => start('practice'), KeyV: () => start('replay'), KeyA: () => start('auto'), Escape: stop }[e.code];
+  const act = { KeyR: () => start('record'), KeyT: () => start('rerecord'), KeyP: () => start('practice'), KeyV: () => start('replay'), KeyA: () => start('auto'), KeyG: sendToGd, Escape: () => { stopGd(); stop(); } }[e.code];
   if (act) { e.preventDefault(); act(); }
 });
 addEventListener('keyup', e => { if (KEYS.has(e.code)) { e.preventDefault(); jump(e.code, false, e.timeStamp); } });
@@ -256,6 +257,7 @@ try {
   es.onerror = () => { helperOn = false; if (hOff === Infinity) es.close(); }; // no helper here: stop retrying
   es.onmessage = e => {
     const [k, v] = e.data.split(',');
+    if (k === 'm') { gdMacro = v; return; } // GD macro state, shown in the status bar
     if (k !== 'k') {
       // ponytail: min-latency offset between helper clock and performance.now, fine unless clocks drift over hours
       hOff = Math.min(hOff, performance.now() - +v);
@@ -263,9 +265,22 @@ try {
     if (k === 'p' || document.hasFocus()) return;
     if (k === 'd') jump('helper', true, +v + hOff);
     else if (k === 'u') jump('helper', false, +v + hOff);
-    else if (k === 'k') v === 'stop' ? stop() : start(v);
+    else if (k === 'k') v === 'stop' ? stop() : v === 'gd' ? sendToGd() : start(v);
   };
 } catch {}
+
+// macro into GD: the helper presses Space for you. You press the first note yourself
+// (that aligns the pattern with the level), the helper plays every note after it at 1x.
+let gdMacro = null;
+async function sendToGd() {
+  if (!helperOn) return alert('gdpt-helper.exe를 실행하고 http://localhost:8123 으로 열어야 합니다');
+  const list = notes.filter(n => sel ? n.t >= sel.a && n.t < sel.b : n.t >= cursor);
+  if (!list.length) return alert('보낼 노트가 없습니다');
+  stop();
+  const body = list.map(n => `${(n.t - list[0].t).toFixed(3)},${n.d.toFixed(3)}`).join('\n');
+  try { await fetch('/macro', { method: 'POST', body }); } catch { alert('helper 연결 실패'); }
+}
+function stopGd() { if (helperOn && (gdMacro === 'armed' || gdMacro === 'playing')) fetch('/macro/stop', { method: 'POST' }).catch(() => {}); }
 lane.addEventListener('wheel', e => {
   if (run) return;
   e.preventDefault();
@@ -293,7 +308,8 @@ on('btnReRec', () => start('rerecord'));
 on('btnPlay', () => start('practice'));
 on('btnReplay', () => start('replay'));
 on('btnAuto', () => start('auto'));
-on('btnStop', stop);
+on('btnGd', sendToGd);
+on('btnStop', () => { stopGd(); stop(); });
 // speed change applies live to a running practice / playback / replay
 function setSpeed() {
   if (!run || !['practice', 'auto', 'replay'].includes(mode)) return;
@@ -456,7 +472,8 @@ function draw(now) {
   $('status').textContent = `${names[mode]}${run ? ' ' + run.speed + 'x' : ''} · ${(p / 1000).toFixed(2)}s · 노트 ${notes.length}개`
     + (sel ? ` · 구간 ${(sel.a / 1000).toFixed(2)}–${(sel.b / 1000).toFixed(2)}s` : '')
     + (mode === 'record' ? ' · Esc / F9로 종료' : '')
-    + (helperOn ? ' · 전역 입력 ON' : '');
+    + (helperOn ? ' · 전역 입력 ON' : '')
+    + ({ armed: ' · GD 매크로 대기: GD에서 첫 노트를 직접 누르세요', playing: ' · GD 매크로 재생 중 (F9 정지)', done: ' · GD 매크로 끝', stopped: ' · GD 매크로 정지' }[gdMacro] ?? '');
 }
 
 function frame(now) {
